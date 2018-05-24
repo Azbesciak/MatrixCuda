@@ -4,3 +4,7 @@
 *.ptx
 *.cubin
 *.fatbin
+Cuda/.vs/
+*.pdb
+Cuda/x64/
+Cuda/Cuda/x64/
