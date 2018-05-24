@@ -42,7 +42,7 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup>
     <IntDir>$(Platform)/$(Configuration)/</IntDir>
-    <IncludePath>$(IncludePath)</IncludePath>
+    <IncludePath>C:\ProgramData\NVIDIA Corporation\CUDA Samples\v9.2\common\inc;$(IncludePath)</IncludePath>
     <CodeAnalysisRuleSet>AllRules.ruleset</CodeAnalysisRuleSet>
     <CodeAnalysisRules />
     <CodeAnalysisRuleAssemblies />
