@@ -325,12 +325,17 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dimsA, dim3 &dim
 
 	printf("Checking computed result for correctness: ");
 	bool correct = true;
-
+	const double dot_length = dimsA.x;
+	const double eps = 1.e-6;  // machine zero
 	for (int i = 0; i < (int)(dimsC.x * dimsC.y); i++)
 	{
-		if (fabs(h_C[i] - (dimsA.x * valB)) > 1e-5)
-		{
-			printf("Error! Matrix[%05d]=%.8f, ref=%.8f error term is > 1e-5\n", i, h_C[i], dimsA.x*valB);
+		double abs_err = fabs(h_C[i] - (dimsA.x * valB));
+		double abs_val = fabs(h_C[i]);
+		double rel_err = abs_err / abs_val / dot_length;
+
+		if (rel_err > eps) {
+			printf("Error! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",
+				i, h_C[i], dimsA.x * valB, eps);
 			correct = false;
 		}
 	}
@@ -416,8 +421,8 @@ int main(int argc, char **argv)
 	// Use a larger block size for Fermi and above
 	int block_size = (deviceProp.major < 2) ? 16 : 32;
 
-	dim3 dimsA(5 * 2 * block_size, 5 * 2 * block_size, 1);
-	dim3 dimsB(5 * 4 * block_size, 5 * 2 * block_size, 1);
+	dim3 dimsA(20 * block_size, 20 * block_size, 1);
+	dim3 dimsB(20 * block_size, 20 * block_size, 1);
 
 	// width of Matrix A
 	if (checkCmdLineFlag(argc, (const char **)argv, "wA"))
