@@ -29,7 +29,6 @@
 // System includes
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
-
 #include <stdio.h>
 
 #define WIN32
@@ -40,6 +39,14 @@
 
 // Helper functions and utilities to work with CUDA
 #include <helper_functions.h>
+
+//CONSTANTS
+const int MATRIX_MAX_SIZE = 2048;
+const int MATRIX_MIN_SIZE = 0;
+const double eps = 1.e-4;  // machine zero
+
+
+bool isNCorrect(int n);
 
 cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
 
@@ -140,7 +147,7 @@ void constantInit(float *data, int size, float val)
 /**
 * Run a simple test of matrix multiplication using CUDA
 */
-int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim)
+int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async)
 {
 	// Allocate host memory for matrices A and B
 	unsigned int size_A = dim.x * dim.y;
@@ -156,7 +163,6 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim)
 	// Allocate device memory
 	float *d_A, *d_B, *d_C;
 
-
 	float *h_C = (float *)malloc(mat_mem_size);
 
 	if (h_C == NULL)
@@ -165,44 +171,43 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim)
 		exit(EXIT_FAILURE);
 	}
 
-	cudaError_t error = cudaMalloc((void **)&d_A, mat_mem_size);
-
-	if (error != cudaSuccess)
+	cudaError_t	cuda_last_operation_status = cudaMalloc((void **)&d_A, mat_mem_size);
+	if (cuda_last_operation_status != cudaSuccess)
 	{
-		printf("cudaMalloc d_A returned error code %d, line(%d)\n", error, __LINE__);
+		printf("cudaMalloc d_A returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
 		exit(EXIT_FAILURE);
 	}
 
-	error = cudaMalloc((void **)&d_B, mat_mem_size);
+	cuda_last_operation_status = cudaMalloc((void **)&d_B, mat_mem_size);
 
-	if (error != cudaSuccess)
+	if (cuda_last_operation_status != cudaSuccess)
 	{
-		printf("cudaMalloc d_B returned error code %d, line(%d)\n", error, __LINE__);
+		printf("cudaMalloc d_B returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
 		exit(EXIT_FAILURE);
 	}
 
-	error = cudaMalloc((void **)&d_C, mat_mem_size);
+	cuda_last_operation_status = cudaMalloc((void **)&d_C, mat_mem_size);
 
-	if (error != cudaSuccess)
+	if (cuda_last_operation_status != cudaSuccess)
 	{
-		printf("cudaMalloc d_C returned error code %d, line(%d)\n", error, __LINE__);
+		printf("cudaMalloc d_C returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
 		exit(EXIT_FAILURE);
 	}
 
 	// copy host memory to device
-	error = cudaMemcpy(d_A, h_A, mat_mem_size, cudaMemcpyHostToDevice);
+	cuda_last_operation_status = cudaMemcpy(d_A, h_A, mat_mem_size, cudaMemcpyHostToDevice);
 
-	if (error != cudaSuccess)
+	if (cuda_last_operation_status != cudaSuccess)
 	{
-		printf("cudaMemcpy (d_A,h_A) returned error code %d, line(%d)\n", error, __LINE__);
+		printf("cudaMemcpy (d_A,h_A) returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
 		exit(EXIT_FAILURE);
 	}
 
-	error = cudaMemcpy(d_B, h_B, mat_mem_size, cudaMemcpyHostToDevice);
+	cuda_last_operation_status = cudaMemcpy(d_B, h_B, mat_mem_size, cudaMemcpyHostToDevice);
 
-	if (error != cudaSuccess)
+	if (cuda_last_operation_status != cudaSuccess)
 	{
-		printf("cudaMemcpy (d_B,h_B) returned error code %d, line(%d)\n", error, __LINE__);
+		printf("cudaMemcpy (d_B,h_B) returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
 		exit(EXIT_FAILURE);
 	}
 
@@ -226,29 +231,29 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim)
 
 	// Allocate CUDA events that we'll use for timing
 	cudaEvent_t start;
-	error = cudaEventCreate(&start);
+	cuda_last_operation_status = cudaEventCreate(&start);
 
-	if (error != cudaSuccess)
+	if (cuda_last_operation_status != cudaSuccess)
 	{
-		fprintf(stderr, "Failed to create start event (error code %s)!\n", cudaGetErrorString(error));
+		fprintf(stderr, "Failed to create start event (error code %s)!\n", cudaGetErrorString(cuda_last_operation_status));
 		exit(EXIT_FAILURE);
 	}
 
 	cudaEvent_t stop;
-	error = cudaEventCreate(&stop);
+	cuda_last_operation_status = cudaEventCreate(&stop);
 
-	if (error != cudaSuccess)
+	if (cuda_last_operation_status != cudaSuccess)
 	{
-		fprintf(stderr, "Failed to create stop event (error code %s)!\n", cudaGetErrorString(error));
+		fprintf(stderr, "Failed to create stop event (error code %s)!\n", cudaGetErrorString(cuda_last_operation_status));
 		exit(EXIT_FAILURE);
 	}
 
 	// Record the start event
-	error = cudaEventRecord(start, NULL);
+	cuda_last_operation_status = cudaEventRecord(start, NULL);
 
-	if (error != cudaSuccess)
+	if (cuda_last_operation_status != cudaSuccess)
 	{
-		fprintf(stderr, "Failed to record start event (error code %s)!\n", cudaGetErrorString(error));
+		fprintf(stderr, "Failed to record start event (error code %s)!\n", cudaGetErrorString(cuda_last_operation_status));
 		exit(EXIT_FAILURE);
 	}
 
@@ -266,29 +271,29 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim)
 	}
 
 	// Record the stop event
-	error = cudaEventRecord(stop, NULL);
+	cuda_last_operation_status = cudaEventRecord(stop, NULL);
 
-	if (error != cudaSuccess)
+	if (cuda_last_operation_status != cudaSuccess)
 	{
-		fprintf(stderr, "Failed to record stop event (error code %s)!\n", cudaGetErrorString(error));
+		fprintf(stderr, "Failed to record stop event (error code %s)!\n", cudaGetErrorString(cuda_last_operation_status));
 		exit(EXIT_FAILURE);
 	}
 
 	// Wait for the stop event to complete
-	error = cudaEventSynchronize(stop);
+	cuda_last_operation_status = cudaEventSynchronize(stop);
 
-	if (error != cudaSuccess)
+	if (cuda_last_operation_status != cudaSuccess)
 	{
-		fprintf(stderr, "Failed to synchronize on the stop event (error code %s)!\n", cudaGetErrorString(error));
+		fprintf(stderr, "Failed to synchronize on the stop event (error code %s)!\n", cudaGetErrorString(cuda_last_operation_status));
 		exit(EXIT_FAILURE);
 	}
 
 	float msecTotal = 0.0f;
-	error = cudaEventElapsedTime(&msecTotal, start, stop);
+	cuda_last_operation_status = cudaEventElapsedTime(&msecTotal, start, stop);
 
-	if (error != cudaSuccess)
+	if (cuda_last_operation_status != cudaSuccess)
 	{
-		fprintf(stderr, "Failed to get time elapsed between events (error code %s)!\n", cudaGetErrorString(error));
+		fprintf(stderr, "Failed to get time elapsed between events (error code %s)!\n", cudaGetErrorString(cuda_last_operation_status));
 		exit(EXIT_FAILURE);
 	}
 
@@ -304,18 +309,17 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim)
 		threads.x * threads.y);
 
 	// Copy result from device to host
-	error = cudaMemcpy(h_C, d_C, mat_mem_size, cudaMemcpyDeviceToHost);
+	cuda_last_operation_status = cudaMemcpy(h_C, d_C, mat_mem_size, cudaMemcpyDeviceToHost);
 
-	if (error != cudaSuccess)
+	if (cuda_last_operation_status != cudaSuccess)
 	{
-		printf("cudaMemcpy (h_C,d_C) returned error code %d, line(%d)\n", error, __LINE__);
+		printf("cudaMemcpy (h_C,d_C) returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
 		exit(EXIT_FAILURE);
 	}
 
 	printf("Checking computed result for correctness: ");
 	bool correct = true;
 	const double dot_length = dim.x;
-	const double eps = 1.e-6;  // machine zero
 	for (int i = 0; i < (int)(dim.x * dim.y); i++)
 	{
 		const double abs_err = fabs(h_C[i] - (dim.x * valB));
@@ -323,7 +327,7 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim)
 		const double rel_err = abs_err / abs_val / dot_length;
 
 		if (rel_err > eps) {
-			printf("Error! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",
+			printf("Error - too big inaccuracy! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",
 				i, h_C[i], dim.x * valB, eps);
 			correct = false;
 		}
@@ -341,7 +345,6 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim)
 	cudaDeviceReset();
 	return correct ? EXIT_SUCCESS : EXIT_FAILURE;
 }
-
 
 /**
 * Program main
@@ -381,15 +384,34 @@ int main(int argc, char **argv)
 
 	dim3 dim(20 * block_size, 20 * block_size, 1);
 	// width of Matrix A
-	if (checkCmdLineFlag(argc, (const char **)argv, "n"))
+	int n = 300; 
+	if (!isNCorrect(n))
 	{
-		int n = getCmdLineArgumentInt(argc, (const char **)argv, "n");
-		dim.x = n;
-		dim.y = n;
+		//try get N value from comman line arguments
+		if (checkCmdLineFlag(argc, (const char **)argv, "n"))
+		{
+			n = getCmdLineArgumentInt(argc, (const char **)argv, "n");
+			if (!isNCorrect(n))
+			{
+				printf("N=%d is incorrect. n should be in the range [%d, %d].\n", n, MATRIX_MIN_SIZE, MATRIX_MAX_SIZE);
+				exit(0);
+			}
+		}
 	}
+
+	dim.x = n;
+	dim.y = n;
+	
 	printf("Matrix(%d,%d)\n", dim.x, dim.y);
 
-	const int matrix_result = matrixMultiply(argc, argv, block_size, dim);
+	const int matrix_result = matrixMultiply(argc, argv, block_size, dim, false);
 
-	exit(matrix_result);
+	exit(0);
+}
+
+
+
+bool isNCorrect(int n)
+{
+	return (n > MATRIX_MIN_SIZE && n < MATRIX_MAX_SIZE);
 }
