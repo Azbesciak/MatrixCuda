@@ -43,6 +43,7 @@
 //CONSTANTS
 const int MATRIX_MAX_SIZE = 2048;
 const int MATRIX_MIN_SIZE = 0;
+const int MAX_STREAMS = 10;
 const double eps = 1.e-4;  // machine zero
 
 
@@ -147,10 +148,32 @@ void constantInit(float *data, int size, float val)
 /**
 * Run a simple test of matrix multiplication using CUDA
 */
-int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async)
+int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async, int streams = 0)
 {
+	if (dim.x != dim.y)
+	{
+		printf("Only square matrices are supported, (dim.x=%d, dim.y=%d).\n", dim.x, dim.y);
+		exit(0);
+	}
+	int n = dim.x;
+	if (async)
+	{
+		if (streams < 1 || streams > MAX_STREAMS)
+		{
+			printf("Number of streams should be in the range [1, %d] in the async mode.\n", MAX_STREAMS);
+			exit(0);
+		}
+		else
+		{
+			if (n / streams * streams != n)
+			{
+				printf("N should be a multiple of the number of streams.");
+				exit(0);
+			}
+		}
+	}
 	// Allocate host memory for matrices A and B
-	unsigned int size_A = dim.x * dim.y;
+	unsigned int size_A = n*n;
 	unsigned int mat_mem_size = sizeof(float) * size_A;
 	float *h_A = (float *)malloc(mat_mem_size);
 	float *h_B = (float *)malloc(mat_mem_size);
@@ -164,6 +187,16 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async)
 	float *d_A, *d_B, *d_C;
 
 	float *h_C = (float *)malloc(mat_mem_size);
+
+	//streams for async communication
+	cudaStream_t *available_streams = (cudaStream_t *)malloc(streams);
+	if (async)
+	{
+		for (int i = 0; i < streams; i++)
+		{
+			cudaStreamCreate(&available_streams[i]);
+		}
+	}
 
 	if (h_C == NULL)
 	{
@@ -195,7 +228,10 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async)
 	}
 
 	// copy host memory to device
-	cuda_last_operation_status = cudaMemcpy(d_A, h_A, mat_mem_size, cudaMemcpyHostToDevice);
+	if (!async)
+	{
+		cuda_last_operation_status = cudaMemcpy(d_A, h_A, mat_mem_size, cudaMemcpyHostToDevice);
+	}
 
 	if (cuda_last_operation_status != cudaSuccess)
 	{
@@ -203,7 +239,11 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async)
 		exit(EXIT_FAILURE);
 	}
 
-	cuda_last_operation_status = cudaMemcpy(d_B, h_B, mat_mem_size, cudaMemcpyHostToDevice);
+	// copy host memory to device
+	if (!async)
+	{
+		cuda_last_operation_status = cudaMemcpy(d_B, h_B, mat_mem_size, cudaMemcpyHostToDevice);
+	}
 
 	if (cuda_last_operation_status != cudaSuccess)
 	{
@@ -215,19 +255,6 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async)
 	dim3 threads(block_size, block_size);
 	dim3 grid(dim.x / threads.x, dim.y / threads.y);
 
-	// Create and start timer
-	printf("Computing result using CUDA Kernel...\n");
-
-	// Performs warmup operation using matrixMul CUDA kernel
-	switch (block_size)
-	{
-	case 8: matrixMulCUDA<8> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
-	case 16: matrixMulCUDA<16> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
-	case 32: matrixMulCUDA<32> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
-	}
-	printf("done\n");
-
-	cudaDeviceSynchronize();
 
 	// Allocate CUDA events that we'll use for timing
 	cudaEvent_t start;
@@ -262,11 +289,29 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async)
 
 	for (int j = 0; j < nIter; j++)
 	{
-		switch (block_size)
+		if (async)
 		{
-		case 8: matrixMulCUDA<8> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
-		case 16: matrixMulCUDA<16> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
-		case 32: matrixMulCUDA<32> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
+			int step = n / streams;
+			for (int i = 0, int off = 0; i < streams; i++, off+=step)
+			{
+				//TO DO - set appropriate offsets
+				//cudaMemcpyAsync(d_A+off, h_A+off, );
+				//switch (block_size)
+				//{
+				//case 8: matrixMulCUDA<8> << < grid, threads, 0, stream3 >> > (d_C, d_A + off, d_B + off, n / streams); break;
+				//case 16: matrixMulCUDA<16> << < grid, threads, 0, stream3 >> > (d_C, d_A, d_B, n / streams); break;
+				//case 32: matrixMulCUDA<32> << < grid, threads, 0, stream3 >> > (d_C, d_A, d_B, dim.x); break;
+				//}
+			}
+		}
+		else
+		{
+			switch (block_size)
+			{
+			case 8: matrixMulCUDA<8> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
+			case 16: matrixMulCUDA<16> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
+			case 32: matrixMulCUDA<32> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
+			}
 		}
 	}
 
@@ -309,7 +354,10 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async)
 		threads.x * threads.y);
 
 	// Copy result from device to host
-	cuda_last_operation_status = cudaMemcpy(h_C, d_C, mat_mem_size, cudaMemcpyDeviceToHost);
+	if (!async)
+	{
+		cuda_last_operation_status = cudaMemcpy(h_C, d_C, mat_mem_size, cudaMemcpyDeviceToHost);
+	}
 
 	if (cuda_last_operation_status != cudaSuccess)
 	{
@@ -339,6 +387,7 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async)
 	free(h_A);
 	free(h_B);
 	free(h_C);
+	free(available_streams);
 	cudaFree(d_A);
 	cudaFree(d_B);
 	cudaFree(d_C);
