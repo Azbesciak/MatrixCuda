@@ -145,6 +145,25 @@ void constantInit(float *data, int size, float val)
 	}
 }
 
+void htd_sync_copy(const unsigned mat_mem_size, float* h_A, float* h_B, float* d_A, float* d_B, cudaError_t& cuda_last_operation_status)
+{
+	// copy host memory to device
+	cuda_last_operation_status = cudaMemcpy(d_A, h_A, mat_mem_size, cudaMemcpyHostToDevice);
+	if (cuda_last_operation_status != cudaSuccess)
+	{
+		printf("cudaMemcpy (d_A,h_A) returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
+		exit(EXIT_FAILURE);
+	}
+
+	// copy host memory to device
+	cuda_last_operation_status = cudaMemcpy(d_B, h_B, mat_mem_size, cudaMemcpyHostToDevice);
+	if (cuda_last_operation_status != cudaSuccess)
+	{
+		printf("cudaMemcpy (d_B,h_B) returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
+		exit(EXIT_FAILURE);
+	}
+}
+
 /**
 * Run a simple test of matrix multiplication using CUDA
 */
@@ -155,7 +174,12 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async,
 		printf("Only square matrices are supported, (dim.x=%d, dim.y=%d).\n", dim.x, dim.y);
 		exit(0);
 	}
-	int n = dim.x;
+	const int n = dim.x;
+	if (n % block_size != 0)
+	{
+		printf("n should be multiplication of %d", block_size);
+		exit(0);
+	}
 	if (async)
 	{
 		if (streams < 1 || streams > MAX_STREAMS)
@@ -163,25 +187,22 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async,
 			printf("Number of streams should be in the range [1, %d] in the async mode.\n", MAX_STREAMS);
 			exit(0);
 		}
-		else
+		if (n % streams != 0)
 		{
-			if (n / streams * streams != n)
-			{
-				printf("N should be a multiple of the number of streams.");
-				exit(0);
-			}
+			printf("N should be a multiple of the number of streams.");
+			exit(0);
 		}
 	}
 	// Allocate host memory for matrices A and B
-	unsigned int size_A = n*n;
-	unsigned int mat_mem_size = sizeof(float) * size_A;
+	const unsigned int mat_size = n*n;
+	const unsigned int mat_mem_size = sizeof(float) * mat_size;
 	float *h_A = (float *)malloc(mat_mem_size);
 	float *h_B = (float *)malloc(mat_mem_size);
 
 	// Initialize host memory
 	const float valB = 0.01f;
-	constantInit(h_A, size_A, 1.0f);
-	constantInit(h_B, size_A, valB);
+	constantInit(h_A, mat_size, 1.0f);
+	constantInit(h_B, mat_size, valB);
 
 	// Allocate device memory
 	float *d_A, *d_B, *d_C;
@@ -227,30 +248,6 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async,
 		exit(EXIT_FAILURE);
 	}
 
-	// copy host memory to device
-	if (!async)
-	{
-		cuda_last_operation_status = cudaMemcpy(d_A, h_A, mat_mem_size, cudaMemcpyHostToDevice);
-	}
-
-	if (cuda_last_operation_status != cudaSuccess)
-	{
-		printf("cudaMemcpy (d_A,h_A) returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
-		exit(EXIT_FAILURE);
-	}
-
-	// copy host memory to device
-	if (!async)
-	{
-		cuda_last_operation_status = cudaMemcpy(d_B, h_B, mat_mem_size, cudaMemcpyHostToDevice);
-	}
-
-	if (cuda_last_operation_status != cudaSuccess)
-	{
-		printf("cudaMemcpy (d_B,h_B) returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
-		exit(EXIT_FAILURE);
-	}
-
 	// Setup execution parameters
 	dim3 threads(block_size, block_size);
 	dim3 grid(dim.x / threads.x, dim.y / threads.y);
@@ -284,15 +281,14 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async,
 		exit(EXIT_FAILURE);
 	}
 
-	// Execute the kernel
-	int nIter = 1;
-
+	int nIter = 5;
 	for (int j = 0; j < nIter; j++)
 	{
+		printf("iteration %d\n", j);
 		if (async)
 		{
 			int step = n / streams;
-			for (int i = 0, int off = 0; i < streams; i++, off+=step)
+			for (int i = 0, off = 0; i < streams; i++, off += step)
 			{
 				//TO DO - set appropriate offsets
 				//cudaMemcpyAsync(d_A+off, h_A+off, );
@@ -306,6 +302,7 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async,
 		}
 		else
 		{
+			htd_sync_copy(mat_mem_size, h_A, h_B, d_A, d_B, cuda_last_operation_status);
 			switch (block_size)
 			{
 			case 8: matrixMulCUDA<8> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
@@ -433,7 +430,7 @@ int main(int argc, char **argv)
 
 	dim3 dim(20 * block_size, 20 * block_size, 1);
 	// width of Matrix A
-	int n = 300; 
+	int n = 512; 
 	if (!isNCorrect(n))
 	{
 		//try get N value from comman line arguments
