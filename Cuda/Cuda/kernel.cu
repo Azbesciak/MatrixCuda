@@ -39,9 +39,10 @@
 
 // Helper functions and utilities to work with CUDA
 #include <helper_functions.h>
+#include <helper_cuda.h>
 
 //CONSTANTS
-const int MATRIX_MAX_SIZE = 2048;
+const int MATRIX_MAX_SIZE = 4096;
 const int MATRIX_MIN_SIZE = 0;
 const int MAX_STREAMS = 10;
 const double eps = 1.e-4;  // machine zero
@@ -225,28 +226,9 @@ int matrixMultiply(int block_size, dim3 &dim, bool async, int streams = 0)
 		exit(EXIT_FAILURE);
 	}
 
-	cudaError_t	cuda_last_operation_status = cudaMalloc((void **)&d_A, mat_mem_size);
-	if (cuda_last_operation_status != cudaSuccess)
-	{
-		printf("cudaMalloc d_A returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
-		exit(EXIT_FAILURE);
-	}
-
-	cuda_last_operation_status = cudaMalloc((void **)&d_B, mat_mem_size);
-
-	if (cuda_last_operation_status != cudaSuccess)
-	{
-		printf("cudaMalloc d_B returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
-		exit(EXIT_FAILURE);
-	}
-
-	cuda_last_operation_status = cudaMalloc((void **)&d_C, mat_mem_size);
-
-	if (cuda_last_operation_status != cudaSuccess)
-	{
-		printf("cudaMalloc d_C returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
-		exit(EXIT_FAILURE);
-	}
+	checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&d_A), mat_mem_size));
+	checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&d_B), mat_mem_size));
+	checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&d_C), mat_mem_size));
 
 	// Setup execution parameters
 	dim3 threads(block_size, block_size);
@@ -255,32 +237,13 @@ int matrixMultiply(int block_size, dim3 &dim, bool async, int streams = 0)
 
 	// Allocate CUDA events that we'll use for timing
 	cudaEvent_t start;
-	cuda_last_operation_status = cudaEventCreate(&start);
-
-	if (cuda_last_operation_status != cudaSuccess)
-	{
-		fprintf(stderr, "Failed to create start event (error code %s)!, line(%d)\n\n", cudaGetErrorString(cuda_last_operation_status), __LINE__);
-		exit(EXIT_FAILURE);
-	}
-
+	checkCudaErrors(cudaEventCreate(&start));
 	cudaEvent_t stop;
-	cuda_last_operation_status = cudaEventCreate(&stop);
-
-	if (cuda_last_operation_status != cudaSuccess)
-	{
-		fprintf(stderr, "Failed to create stop event (error code %s)!, line(%d)\n\n", cudaGetErrorString(cuda_last_operation_status), __LINE__);
-		exit(EXIT_FAILURE);
-	}
+	checkCudaErrors(cudaEventCreate(&stop));
 
 	// Record the start event
-	cuda_last_operation_status = cudaEventRecord(start, NULL);
-
-	if (cuda_last_operation_status != cudaSuccess)
-	{
-		fprintf(stderr, "Failed to record start event (error code %s)!, line(%d)\n\n", cudaGetErrorString(cuda_last_operation_status), __LINE__);
-		exit(EXIT_FAILURE);
-	}
-
+	checkCudaErrors(cudaEventRecord(start, NULL));
+	
 	int nIter = 10;
 	for (int j = 0; j < nIter; j++)
 	{
@@ -305,41 +268,23 @@ int matrixMultiply(int block_size, dim3 &dim, bool async, int streams = 0)
 			htd_sync_copy(mat_mem_size, h_A, h_B, d_A, d_B);
 			switch (block_size)
 			{
-			case 8: matrixMulCUDA<8> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
-			case 16: matrixMulCUDA<16> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
-			case 32: matrixMulCUDA<32> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
+			case 8: matrixMulCUDA<8> <<< grid, threads >>> (d_C, d_A, d_B, dim.x); break;
+			case 16: matrixMulCUDA<16> <<< grid, threads >>> (d_C, d_A, d_B, dim.x); break;
+			case 32: matrixMulCUDA<32> <<< grid, threads >>> (d_C, d_A, d_B, dim.x); break;
 			}
 			dth_sync_result_copy(mat_mem_size, d_C, h_C);
 		}
 	}
+	
 
 	// Record the stop event
-	cuda_last_operation_status = cudaEventRecord(stop, NULL);
-
-	if (cuda_last_operation_status != cudaSuccess)
-	{
-		fprintf(stderr, "Failed to record stop event (error code %s)!\n", cudaGetErrorString(cuda_last_operation_status));
-		exit(EXIT_FAILURE);
-	}
+	checkCudaErrors(cudaEventRecord(stop, NULL));
 
 	// Wait for the stop event to complete
-	cuda_last_operation_status = cudaEventSynchronize(stop);
-
-	if (cuda_last_operation_status != cudaSuccess)
-	{
-		fprintf(stderr, "Failed to synchronize on the stop event (error code %s)!\n", cudaGetErrorString(cuda_last_operation_status));
-		exit(EXIT_FAILURE);
-	}
+	checkCudaErrors(cudaEventSynchronize(stop));
 
 	float msecTotal = 0.0f;
-	cuda_last_operation_status = cudaEventElapsedTime(&msecTotal, start, stop);
-
-	if (cuda_last_operation_status != cudaSuccess)
-	{
-		fprintf(stderr, "Failed to get time elapsed between events (error code %s)!\n", cudaGetErrorString(cuda_last_operation_status));
-		exit(EXIT_FAILURE);
-	}
-
+	checkCudaErrors(cudaEventElapsedTime(&msecTotal, start, stop));
 	// Compute and print the performance
 	float msecPerMatrixMul = msecTotal / nIter;
 	double flopsPerMatrixMul = 2.0 * (double)dim.x * (double)dim.y * (double)dim.x;
@@ -380,7 +325,6 @@ int matrixMultiply(int block_size, dim3 &dim, bool async, int streams = 0)
 	cudaDeviceReset();
 	return correct ? EXIT_SUCCESS : EXIT_FAILURE;
 }
-
 
 bool is_n_correct(int n)
 {
