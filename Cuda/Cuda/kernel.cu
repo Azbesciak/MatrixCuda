@@ -41,51 +41,21 @@
 #include <helper_functions.h>
 #include <helper_cuda.h>
 
-#define N_ITER 10
-
-const char *sSDKsample = "simpleStreams";
-
-const char *sEventSyncMethod[] =
-{
-	"cudaEventDefault",
-	"cudaEventBlockingSync",
-	"cudaEventDisableTiming",
-	NULL
-};
-
-const char *sDeviceSyncMethod[] =
-{
-	"cudaDeviceScheduleAuto",
-	"cudaDeviceScheduleSpin",
-	"cudaDeviceScheduleYield",
-	"INVALID",
-	"cudaDeviceScheduleBlockingSync",
-	NULL
-};
-
+#define N_ITER 1
 
 //CONSTANTS
-const int MATRIX_MAX_SIZE = 4096;
-const int MATRIX_MIN_SIZE = 0;
-const double eps = 1.e-4;  // machine zero
+#define MATRIX_MAX_SIZE 4096
+#define MATRIX_MIN_SIZE 0
+#define EPS 1.e-6
 
 
 bool is_n_correct(int n);
 
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
-
-__global__ void addKernel(int *c, const int *a, const int *b)
-{
-	int i = threadIdx.x;
-	c[i] = a[i] + b[i];
-}
-
 /**
 * Matrix multiplication (CUDA Kernel) on the device: C = A * B
-* n is A's width and wB is B's width
 */
 template <int BLOCK_SIZE> __global__ void
-matrixMulCUDA(float *C, float *A, float *B, int n)
+matrixMulCUDA(float *C, float *A, float *B, int n, int offset)
 {
 	// Block index
 	int bx = blockIdx.x;
@@ -95,38 +65,16 @@ matrixMulCUDA(float *C, float *A, float *B, int n)
 	int tx = threadIdx.x;
 	int ty = threadIdx.y;
 
-	// Index of the first sub-matrix of A processed by the block
 	int aBegin = n * BLOCK_SIZE * by;
-
-	// Index of the last sub-matrix of A processed by the block
-	int aEnd = aBegin + n - 1;
-
-	// Step size used to iterate through the sub-matrices of A
+	int aEnd = aBegin + n;
 	int aStep = BLOCK_SIZE;
-
-	// Index of the first sub-matrix of B processed by the block
-	int bBegin = BLOCK_SIZE * bx;
-
-	// Step size used to iterate through the sub-matrices of B
-	int bStep = BLOCK_SIZE * n;
-
-	// Csub is used to store the element of the block sub-matrix
-	// that is computed by the thread
+	int bBegin = n * BLOCK_SIZE * bx;
+	int bStep = BLOCK_SIZE;
 	float Csub = 0;
 
-	// Loop over all the sub-matrices of A and B
-	// required to compute the block sub-matrix
-	for (int a = aBegin, b = bBegin;
-		a <= aEnd;
-		a += aStep, b += bStep)
+	for (int a = aBegin, b = bBegin; a < aEnd; a += aStep, b += bStep)
 	{
-
-		// Declaration of the shared memory array As used to
-		// store the sub-matrix of A
 		__shared__ float As[BLOCK_SIZE][BLOCK_SIZE];
-
-		// Declaration of the shared memory array Bs used to
-		// store the sub-matrix of B
 		__shared__ float Bs[BLOCK_SIZE][BLOCK_SIZE];
 
 		// Load the matrices from device memory
@@ -135,17 +83,15 @@ matrixMulCUDA(float *C, float *A, float *B, int n)
 		As[ty][tx] = A[a + n * ty + tx];
 		Bs[ty][tx] = B[b + n * ty + tx];
 
-		// Synchronize to make sure the matrices are loaded
 		__syncthreads();
 
 		// Multiply the two matrices together;
 		// each thread computes one element
 		// of the block sub-matrix
 #pragma unroll
-
 		for (int k = 0; k < BLOCK_SIZE; ++k)
 		{
-			Csub += As[ty][k] * Bs[k][tx];
+			Csub += As[ty][k] * Bs[tx][k];
 		}
 
 		// Synchronize to make sure that the preceding
@@ -204,9 +150,8 @@ void ikj(float * a, float * b, float *c, int n) {
 /**
 * Run a simple test of matrix multiplication using CUDA
 */
-int matrixMultiply(int block_size, dim3 &dim, int nstreams = 1)
+int matrixMultiply(const int block_size, const int n, const int nstreams)
 {
-	const int n = dim.x;
 	if (nstreams < 1 || nstreams > n)
 	{
 		printf("Number of nstreams should be in the range [1, %d] in.\n", n);
@@ -227,19 +172,14 @@ int matrixMultiply(int block_size, dim3 &dim, int nstreams = 1)
 	checkCudaErrors(cudaMallocHost(&h_b, mat_mem_size));
 	checkCudaErrors(cudaMallocHost(&h_c, mat_mem_size));
 
-	// Initialize host memory
-	const float valB = 0.01f;
 	randomInit(h_a, mat_size_in_1d);
 	randomInit(h_b, mat_size_in_1d);
-	//constantInit(h_a, mat_size, 1.0f);
-	//constantInit(h_b, mat_size, valB);
 	transpose(h_b, n);
 	// Allocate device memory
 	float *d_A, *d_B, *d_C;
-
-
+	
 	//nstreams for async communication
-	cudaStream_t *streams = (cudaStream_t *)malloc(nstreams * sizeof(cudaStream_t));
+	cudaStream_t *streams = static_cast<cudaStream_t *>(malloc(nstreams * sizeof(cudaStream_t)));
 	for (int i = 0; i < nstreams; i++)
 	{
 		checkCudaErrors(cudaStreamCreate(&streams[i]));
@@ -256,9 +196,8 @@ int matrixMultiply(int block_size, dim3 &dim, int nstreams = 1)
 	checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&d_C), mat_mem_size));
 
 	// Setup execution parameters
-	dim3 threads(block_size, block_size);
-	dim3 grid(dim.x / threads.x, dim.y / threads.y);
-
+	
+	
 	// Allocate CUDA events that we'll use for timing
 	cudaEvent_t start, stop;
 	checkCudaErrors(cudaEventCreateWithFlags(&start, cudaEventBlockingSync));
@@ -269,27 +208,40 @@ int matrixMultiply(int block_size, dim3 &dim, int nstreams = 1)
 	
 	const int step = mat_size_in_1d / nstreams;
 	const unsigned int chunk_mem_size = mat_mem_size / nstreams;
+	dim3 threads;
+	if (nstreams > 1)
+	{
+		threads = dim3(1, 1);
+	}
+	else
+	{
+		threads = dim3(block_size, block_size);
+	}
+	const int grid_size = n / block_size;
+	dim3 grid(grid_size, grid_size);
+
 	for (int j = 0; j < N_ITER; j++)
 	{
 		printf("iteration %d\n", j);
 		
 		for (int i = 0, off = 0; i < nstreams; i++, off += step)
 		{
-			float* h_a_step = h_a+ off; float* d_a_step = d_A + off;
+			float* h_a_step = h_a + off; float* d_a_step = d_A + off;
 			htd_copy(chunk_mem_size, h_a_step, d_a_step, streams[i]);
 
 			float* h_b_step = h_b + off; float* d_b_step = d_B + off;
 			htd_copy(chunk_mem_size, h_b_step, d_b_step, streams[i]);
 
-			float* d_c_step = d_C+ off; float* h_c_step = h_c+ off;
+			float* d_c_step = d_C + off; float* h_c_step = h_c + off;
 			switch (block_size)
 			{
-			case 8: matrixMulCUDA<8> <<< grid, threads, 0, streams[i] >>> (d_c_step, d_a_step, d_b_step, dim.x); break;
-			case 16: matrixMulCUDA<16> <<< grid, threads, 0, streams[i] >>> (d_c_step, d_a_step, d_b_step, dim.x); break;
-			case 32: matrixMulCUDA<32> <<< grid, threads, 0, streams[i] >>> (d_c_step, d_a_step, d_b_step, dim.x); break;
+			case 8: matrixMulCUDA<8> <<< grid, threads, 0, streams[i] >>> (d_c_step, d_a_step, d_b_step, n, off); break;
+			case 16: matrixMulCUDA<16> <<< grid, threads, 0, streams[i] >>> (d_c_step, d_a_step, d_b_step, n, off); break;
+			case 32: matrixMulCUDA<32> <<< grid, threads, 0, streams[i] >>> (d_c_step, d_a_step, d_b_step, n, off); break;
 			}
 			dth_copy(chunk_mem_size, d_c_step, h_c_step, streams[i]);
 		}
+		cudaDeviceSynchronize();
 	}
 
 	// Record the stop event
@@ -302,7 +254,7 @@ int matrixMultiply(int block_size, dim3 &dim, int nstreams = 1)
 	checkCudaErrors(cudaEventElapsedTime(&msecTotal, start, stop));
 	// Compute and print the performance
 	float msecPerMatrixMul = msecTotal / N_ITER;
-	double flopsPerMatrixMul = 2.0 * (double)dim.x * (double)dim.y * (double)dim.x;
+	double flopsPerMatrixMul = 2.0 * (double)n * (double)n * (double)n;
 	double gigaFlops = (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
 	printf(
 		"Performance= %.2f GFlop/s, Time= %.3f msec, Size= %.0f Ops, WorkgroupSize= %u threads/block\n",
@@ -315,28 +267,32 @@ int matrixMultiply(int block_size, dim3 &dim, int nstreams = 1)
 	bool correct = true;
 	float *cres = static_cast<float*>(malloc(mat_mem_size));
 	constantInit(cres, mat_size_in_1d, 0);
-	//transpose(h_b, n);
+	transpose(h_b, n);
 	ikj(h_a, h_b, cres, n);
+	float sum_org = 0, sum_cpy = 0;
 	for (int i = 0; i < mat_size_in_1d; i++)
 	{
+		sum_org += h_c[i];
+		sum_cpy += cres[i];
 		const double abs_err = fabs(h_c[i] - cres[i]);
 		const double abs_val = fabs(h_c[i]);
 		const double rel_err = abs_err / abs_val / n;
-
-		if (rel_err > eps) {
+		if (rel_err > EPS) {
 			printf("Error - too big inaccuracy! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",
-				i, h_c[i], n * valB, eps);
+				i, h_c[i], cres[i], EPS);
 			correct = false;
 		}
 	}
 
 	printf("%s\n", correct ? "OK" : "FAIL");
+	printf("org- %f, cpy- %f, dif: %f \n", sum_org, sum_cpy, sum_org - sum_cpy);
 
 	// Clean up memory
 	free(h_a);
 	free(h_b);
 	free(h_c);
 	free(streams);
+	free(cres);
 	cudaFree(d_A);
 	cudaFree(d_B);
 	cudaFree(d_C);
@@ -404,18 +360,16 @@ int main(int argc, char **argv)
 	// Use a larger block size for Fermi and above
 	const int block_size = (device_prop.major < 2) ? 16 : 32;
 
-	dim3 dim(20 * block_size, 20 * block_size, 1);
 	// width of Matrix A
 	const int n = get_n(argc, argv, block_size);
-	dim.x = dim.y = n;
-	printf("Matrix(%d,%d)\n", dim.x, dim.y);
+	printf("Matrix(%d,%d)\n", n, n);
 	if (checkCmdLineFlag(argc, const_cast<const char **>(argv), "a")) //async
 	{
-		const int streams = (n / block_size);
-		matrixMultiply(block_size, dim, streams);
+		const int streams = 4;
+		matrixMultiply(block_size, n, streams);
 	} else
 	{
-		matrixMultiply(block_size, dim);
+		matrixMultiply(block_size, n, 1);
 	}
 	exit(0);
 }
