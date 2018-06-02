@@ -47,7 +47,7 @@ const int MAX_STREAMS = 10;
 const double eps = 1.e-4;  // machine zero
 
 
-bool isNCorrect(int n);
+bool is_n_correct(int n);
 
 cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
 
@@ -140,18 +140,16 @@ matrixMulCUDA(float *C, float *A, float *B, int n)
 void constantInit(float *data, int size, float val)
 {
 	for (int i = 0; i < size; ++i)
-	{
 		data[i] = val;
-	}
 }
 
-void htd_sync_copy(const unsigned mat_mem_size, float* h_A, float* h_B, float* d_A, float* d_B, cudaError_t& cuda_last_operation_status)
+void htd_sync_copy(const unsigned mat_mem_size, float* h_A, float* h_B, float* d_A, float* d_B)
 {
 	// copy host memory to device
-	cuda_last_operation_status = cudaMemcpy(d_A, h_A, mat_mem_size, cudaMemcpyHostToDevice);
+	cudaError_t cuda_last_operation_status = cudaMemcpy(d_A, h_A, mat_mem_size, cudaMemcpyHostToDevice);
 	if (cuda_last_operation_status != cudaSuccess)
 	{
-		printf("cudaMemcpy (d_A,h_A) returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
+		printf("cudaMemcpy (d_A,h_A) returned error %s, line(%d)\n", cudaGetErrorString(cuda_last_operation_status), __LINE__);
 		exit(EXIT_FAILURE);
 	}
 
@@ -159,7 +157,19 @@ void htd_sync_copy(const unsigned mat_mem_size, float* h_A, float* h_B, float* d
 	cuda_last_operation_status = cudaMemcpy(d_B, h_B, mat_mem_size, cudaMemcpyHostToDevice);
 	if (cuda_last_operation_status != cudaSuccess)
 	{
-		printf("cudaMemcpy (d_B,h_B) returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
+		
+		printf("cudaMemcpy (d_B,h_B) returned error %s, line(%d)\n", cudaGetErrorString(cuda_last_operation_status), __LINE__);
+		exit(EXIT_FAILURE);
+	}
+}
+
+void dth_sync_result_copy(const unsigned mat_mem_size, float* d_C, float* h_C)
+{
+	// Copy result from device to host
+	const cudaError_t cuda_last_operation_status = cudaMemcpy(h_C, d_C, mat_mem_size, cudaMemcpyDeviceToHost);
+	if (cuda_last_operation_status != cudaSuccess)
+	{
+		printf("cudaMemcpy (h_C,d_C) returned error %s, line(%d)\n", cudaGetErrorString(cuda_last_operation_status), __LINE__);
 		exit(EXIT_FAILURE);
 	}
 }
@@ -167,19 +177,9 @@ void htd_sync_copy(const unsigned mat_mem_size, float* h_A, float* h_B, float* d
 /**
 * Run a simple test of matrix multiplication using CUDA
 */
-int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async, int streams = 0)
+int matrixMultiply(int block_size, dim3 &dim, bool async, int streams = 0)
 {
-	if (dim.x != dim.y)
-	{
-		printf("Only square matrices are supported, (dim.x=%d, dim.y=%d).\n", dim.x, dim.y);
-		exit(0);
-	}
 	const int n = dim.x;
-	if (n % block_size != 0)
-	{
-		printf("n should be multiplication of %d", block_size);
-		exit(0);
-	}
 	if (async)
 	{
 		if (streams < 1 || streams > MAX_STREAMS)
@@ -210,7 +210,7 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async,
 	float *h_C = (float *)malloc(mat_mem_size);
 
 	//streams for async communication
-	cudaStream_t *available_streams = (cudaStream_t *)malloc(streams);
+	cudaStream_t *available_streams = (cudaStream_t *)malloc(streams * sizeof(cudaStream_t));
 	if (async)
 	{
 		for (int i = 0; i < streams; i++)
@@ -259,7 +259,7 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async,
 
 	if (cuda_last_operation_status != cudaSuccess)
 	{
-		fprintf(stderr, "Failed to create start event (error code %s)!\n", cudaGetErrorString(cuda_last_operation_status));
+		fprintf(stderr, "Failed to create start event (error code %s)!, line(%d)\n\n", cudaGetErrorString(cuda_last_operation_status), __LINE__);
 		exit(EXIT_FAILURE);
 	}
 
@@ -268,7 +268,7 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async,
 
 	if (cuda_last_operation_status != cudaSuccess)
 	{
-		fprintf(stderr, "Failed to create stop event (error code %s)!\n", cudaGetErrorString(cuda_last_operation_status));
+		fprintf(stderr, "Failed to create stop event (error code %s)!, line(%d)\n\n", cudaGetErrorString(cuda_last_operation_status), __LINE__);
 		exit(EXIT_FAILURE);
 	}
 
@@ -277,11 +277,11 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async,
 
 	if (cuda_last_operation_status != cudaSuccess)
 	{
-		fprintf(stderr, "Failed to record start event (error code %s)!\n", cudaGetErrorString(cuda_last_operation_status));
+		fprintf(stderr, "Failed to record start event (error code %s)!, line(%d)\n\n", cudaGetErrorString(cuda_last_operation_status), __LINE__);
 		exit(EXIT_FAILURE);
 	}
 
-	int nIter = 5;
+	int nIter = 10;
 	for (int j = 0; j < nIter; j++)
 	{
 		printf("iteration %d\n", j);
@@ -302,13 +302,14 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async,
 		}
 		else
 		{
-			htd_sync_copy(mat_mem_size, h_A, h_B, d_A, d_B, cuda_last_operation_status);
+			htd_sync_copy(mat_mem_size, h_A, h_B, d_A, d_B);
 			switch (block_size)
 			{
 			case 8: matrixMulCUDA<8> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
 			case 16: matrixMulCUDA<16> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
 			case 32: matrixMulCUDA<32> << < grid, threads >> > (d_C, d_A, d_B, dim.x); break;
 			}
+			dth_sync_result_copy(mat_mem_size, d_C, h_C);
 		}
 	}
 
@@ -350,18 +351,6 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async,
 		flopsPerMatrixMul,
 		threads.x * threads.y);
 
-	// Copy result from device to host
-	if (!async)
-	{
-		cuda_last_operation_status = cudaMemcpy(h_C, d_C, mat_mem_size, cudaMemcpyDeviceToHost);
-	}
-
-	if (cuda_last_operation_status != cudaSuccess)
-	{
-		printf("cudaMemcpy (h_C,d_C) returned error code %d, line(%d)\n", cuda_last_operation_status, __LINE__);
-		exit(EXIT_FAILURE);
-	}
-
 	printf("Checking computed result for correctness: ");
 	bool correct = true;
 	const double dot_length = dim.x;
@@ -392,6 +381,31 @@ int matrixMultiply(int argc, char **argv, int block_size, dim3 &dim, bool async,
 	return correct ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
+
+bool is_n_correct(int n)
+{
+	return (n >= MATRIX_MIN_SIZE && n <= MATRIX_MAX_SIZE);
+}
+
+int get_n(int argc, char **argv, int block_size)
+{
+	int n = 512;
+	if (checkCmdLineFlag(argc, (const char **)argv, "n"))
+	{
+		n = getCmdLineArgumentInt(argc, (const char **)argv, "n");
+	}
+	if (!is_n_correct(n))
+	{
+		printf("N=%d is incorrect. n should be in the range [%d, %d].\n", n, MATRIX_MIN_SIZE, MATRIX_MAX_SIZE);
+		exit(-1);
+	}
+	if (n % block_size != 0)
+	{
+		printf("n should be multiplication of %d", block_size);
+		exit(0);
+	}
+	return n;
+}
 /**
 * Program main
 */
@@ -430,34 +444,16 @@ int main(int argc, char **argv)
 
 	dim3 dim(20 * block_size, 20 * block_size, 1);
 	// width of Matrix A
-	int n = 512; 
-	if (!isNCorrect(n))
-	{
-		//try get N value from comman line arguments
-		if (checkCmdLineFlag(argc, (const char **)argv, "n"))
-		{
-			n = getCmdLineArgumentInt(argc, (const char **)argv, "n");
-			if (!isNCorrect(n))
-			{
-				printf("N=%d is incorrect. n should be in the range [%d, %d].\n", n, MATRIX_MIN_SIZE, MATRIX_MAX_SIZE);
-				exit(0);
-			}
-		}
-	}
-
-	dim.x = n;
-	dim.y = n;
-	
+	const int n = get_n(argc, argv, block_size);
+	dim.x = dim.y = n;
 	printf("Matrix(%d,%d)\n", dim.x, dim.y);
-
-	const int matrix_result = matrixMultiply(argc, argv, block_size, dim, false);
-
+	if (checkCmdLineFlag(argc, (const char **) argv, "a")) //async
+	{
+		const int streams = (n / block_size);
+		matrixMultiply(block_size, dim, true, streams);
+	} else
+	{
+		matrixMultiply(block_size, dim, false);
+	}
 	exit(0);
-}
-
-
-
-bool isNCorrect(int n)
-{
-	return (n > MATRIX_MIN_SIZE && n < MATRIX_MAX_SIZE);
 }
