@@ -41,10 +41,11 @@
 #include <helper_functions.h>
 #include <helper_cuda.h>
 
+#define N_ITER 10
+
 //CONSTANTS
 const int MATRIX_MAX_SIZE = 4096;
 const int MATRIX_MIN_SIZE = 0;
-const int MAX_STREAMS = 10;
 const double eps = 1.e-4;  // machine zero
 
 
@@ -178,21 +179,18 @@ void dth_sync_result_copy(const unsigned mat_mem_size, float* d_C, float* h_C)
 /**
 * Run a simple test of matrix multiplication using CUDA
 */
-int matrixMultiply(int block_size, dim3 &dim, bool async, int streams = 0)
+int matrixMultiply(int block_size, dim3 &dim, int nstreams = 1)
 {
 	const int n = dim.x;
-	if (async)
+	if (nstreams < 1 || nstreams > n)
 	{
-		if (streams < 1 || streams > MAX_STREAMS)
-		{
-			printf("Number of streams should be in the range [1, %d] in the async mode.\n", MAX_STREAMS);
-			exit(0);
-		}
-		if (n % streams != 0)
-		{
-			printf("N should be a multiple of the number of streams.");
-			exit(0);
-		}
+		printf("Number of nstreams should be in the range [1, %d] in.\n", n);
+		exit(0);
+	}
+	if (n % nstreams != 0)
+	{
+		printf("N should be a multiple of the number of nstreams.");
+		exit(0);
 	}
 	// Allocate host memory for matrices A and B
 	const unsigned int mat_size = n*n;
@@ -210,14 +208,11 @@ int matrixMultiply(int block_size, dim3 &dim, bool async, int streams = 0)
 
 	float *h_C = (float *)malloc(mat_mem_size);
 
-	//streams for async communication
-	cudaStream_t *available_streams = (cudaStream_t *)malloc(streams * sizeof(cudaStream_t));
-	if (async)
+	//nstreams for async communication
+	cudaStream_t *streams = (cudaStream_t *)malloc(nstreams * sizeof(cudaStream_t));
+	for (int i = 0; i < nstreams; i++)
 	{
-		for (int i = 0; i < streams; i++)
-		{
-			cudaStreamCreate(&available_streams[i]);
-		}
+		checkCudaErrors(cudaStreamCreate(&streams[i]));
 	}
 
 	if (h_C == NULL)
@@ -234,36 +229,20 @@ int matrixMultiply(int block_size, dim3 &dim, bool async, int streams = 0)
 	dim3 threads(block_size, block_size);
 	dim3 grid(dim.x / threads.x, dim.y / threads.y);
 
-
 	// Allocate CUDA events that we'll use for timing
-	cudaEvent_t start;
+	cudaEvent_t start, stop;
 	checkCudaErrors(cudaEventCreate(&start));
-	cudaEvent_t stop;
 	checkCudaErrors(cudaEventCreate(&stop));
 
 	// Record the start event
 	checkCudaErrors(cudaEventRecord(start, NULL));
 	
-	int nIter = 10;
-	for (int j = 0; j < nIter; j++)
+	const int step = n / nstreams;
+	for (int j = 0; j < N_ITER; j++)
 	{
 		printf("iteration %d\n", j);
-		if (async)
-		{
-			int step = n / streams;
-			for (int i = 0, off = 0; i < streams; i++, off += step)
-			{
-				//TO DO - set appropriate offsets
-				//cudaMemcpyAsync(d_A+off, h_A+off, );
-				//switch (block_size)
-				//{
-				//case 8: matrixMulCUDA<8> << < grid, threads, 0, stream3 >> > (d_C, d_A + off, d_B + off, n / streams); break;
-				//case 16: matrixMulCUDA<16> << < grid, threads, 0, stream3 >> > (d_C, d_A, d_B, n / streams); break;
-				//case 32: matrixMulCUDA<32> << < grid, threads, 0, stream3 >> > (d_C, d_A, d_B, dim.x); break;
-				//}
-			}
-		}
-		else
+		
+		for (int i = 0, off = 0; i < nstreams; i++, off += step)
 		{
 			htd_sync_copy(mat_mem_size, h_A, h_B, d_A, d_B);
 			switch (block_size)
@@ -275,7 +254,6 @@ int matrixMultiply(int block_size, dim3 &dim, bool async, int streams = 0)
 			dth_sync_result_copy(mat_mem_size, d_C, h_C);
 		}
 	}
-	
 
 	// Record the stop event
 	checkCudaErrors(cudaEventRecord(stop, NULL));
@@ -286,7 +264,7 @@ int matrixMultiply(int block_size, dim3 &dim, bool async, int streams = 0)
 	float msecTotal = 0.0f;
 	checkCudaErrors(cudaEventElapsedTime(&msecTotal, start, stop));
 	// Compute and print the performance
-	float msecPerMatrixMul = msecTotal / nIter;
+	float msecPerMatrixMul = msecTotal / N_ITER;
 	double flopsPerMatrixMul = 2.0 * (double)dim.x * (double)dim.y * (double)dim.x;
 	double gigaFlops = (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
 	printf(
@@ -318,7 +296,7 @@ int matrixMultiply(int block_size, dim3 &dim, bool async, int streams = 0)
 	free(h_A);
 	free(h_B);
 	free(h_C);
-	free(available_streams);
+	free(streams);
 	cudaFree(d_A);
 	cudaFree(d_B);
 	cudaFree(d_C);
@@ -391,13 +369,13 @@ int main(int argc, char **argv)
 	const int n = get_n(argc, argv, block_size);
 	dim.x = dim.y = n;
 	printf("Matrix(%d,%d)\n", dim.x, dim.y);
-	if (checkCmdLineFlag(argc, (const char **) argv, "a")) //async
+	if (checkCmdLineFlag(argc, const_cast<const char **>(argv), "a")) //async
 	{
 		const int streams = (n / block_size);
-		matrixMultiply(block_size, dim, true, streams);
+		matrixMultiply(block_size, dim, streams);
 	} else
 	{
-		matrixMultiply(block_size, dim, false);
+		matrixMultiply(block_size, dim);
 	}
 	exit(0);
 }
