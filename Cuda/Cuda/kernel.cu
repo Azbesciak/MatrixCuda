@@ -147,33 +147,13 @@ void constantInit(float *data, int size, float val)
 
 void htd_sync_copy(const unsigned mat_mem_size, float* h_A, float* h_B, float* d_A, float* d_B)
 {
-	// copy host memory to device
-	cudaError_t cuda_last_operation_status = cudaMemcpy(d_A, h_A, mat_mem_size, cudaMemcpyHostToDevice);
-	if (cuda_last_operation_status != cudaSuccess)
-	{
-		printf("cudaMemcpy (d_A,h_A) returned error %s, line(%d)\n", cudaGetErrorString(cuda_last_operation_status), __LINE__);
-		exit(EXIT_FAILURE);
-	}
-
-	// copy host memory to device
-	cuda_last_operation_status = cudaMemcpy(d_B, h_B, mat_mem_size, cudaMemcpyHostToDevice);
-	if (cuda_last_operation_status != cudaSuccess)
-	{
-		
-		printf("cudaMemcpy (d_B,h_B) returned error %s, line(%d)\n", cudaGetErrorString(cuda_last_operation_status), __LINE__);
-		exit(EXIT_FAILURE);
-	}
+	checkCudaErrors(cudaMemcpy(d_A, h_A, mat_mem_size, cudaMemcpyHostToDevice));
+	checkCudaErrors(cudaMemcpy(d_B, h_B, mat_mem_size, cudaMemcpyHostToDevice));
 }
 
 void dth_sync_result_copy(const unsigned mat_mem_size, float* d_C, float* h_C)
 {
-	// Copy result from device to host
-	const cudaError_t cuda_last_operation_status = cudaMemcpy(h_C, d_C, mat_mem_size, cudaMemcpyDeviceToHost);
-	if (cuda_last_operation_status != cudaSuccess)
-	{
-		printf("cudaMemcpy (h_C,d_C) returned error %s, line(%d)\n", cudaGetErrorString(cuda_last_operation_status), __LINE__);
-		exit(EXIT_FAILURE);
-	}
+	checkCudaErrors(cudaMemcpy(h_C, d_C, mat_mem_size, cudaMemcpyDeviceToHost));
 }
 
 /**
