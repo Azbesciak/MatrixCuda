@@ -321,12 +321,14 @@ int matrixMultiply(const int block_size, const int n, const int nstreams)
 		printf("org- %f, cpy- %f, dif: %f \n", sum_org, sum_cpy, sum_org - sum_cpy);
 
 	// Clean up memory
-	free(h_a);
-	free(h_b);
-	free(h_c);
 	free(temp_c);
-	free(streams);
 	free(cres);
+	for (int i = 0; i < square_nstreams; i++)
+		checkCudaErrors(cudaStreamDestroy(streams[i]));
+	cudaFreeHost(h_a);
+	cudaFreeHost(h_b);
+	cudaFreeHost(h_c);
+	free(streams);
 	cudaFree(d_A);
 	cudaFree(d_B);
 	cudaFree(d_C);
