@@ -30,6 +30,11 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include <stdio.h>
+#include <iostream>
+#include <fstream>
+#include <utility>
+
+using namespace std;
 
 #define WIN32
 #include <assert.h>
@@ -55,6 +60,9 @@
 #else
 #define DEBUG_PRINT(...)
 #endif
+
+
+const string logFilename = "logfile.txt";
 
 /**
 * Matrix multiplication (CUDA Kernel) on the device: C = A * B
@@ -123,6 +131,21 @@ void randomInit(float * data, int size)
 		data[i] = (float)rand() / RAND_MAX;
 }
 
+
+// recursive variadic function
+template<typename T,typename Element>
+void dumpToFile(ofstream &logStream, T && item, Element && element)
+{
+	logStream << item << ";" << element << endl;
+}
+template<typename T, typename... Elements>
+void dumpToFile(ofstream &logStream,T &&first, Elements && ...args)
+{
+	logStream << forward<T>(first) << ";";
+	dumpToFile(logStream, forward<Elements>(args)...);
+}
+
+
 void htd_copy(const unsigned mat_mem_size, float* h,  float* d, cudaStream_t stream)
 {
 	checkCudaErrors(cudaMemcpyAsync(d, h, mat_mem_size, cudaMemcpyHostToDevice, stream));
@@ -172,7 +195,7 @@ void change_lines_to_grid(float * lines, float * grid, int n, int chunk_n)
 /**
 * Run a simple test of matrix multiplication using CUDA
 */
-int matrixMultiply(const int block_size, const int n, const int nstreams)
+int matrixMultiply(const int block_size, const int n, const int nstreams, ofstream &logStream)
 {
 	if (nstreams < 1 || nstreams > n)
 	{
@@ -282,13 +305,25 @@ int matrixMultiply(const int block_size, const int n, const int nstreams)
 	float msecPerMatrixMul = msecTotal / N_ITER;
 	double flopsPerMatrixMul = 2.0 * (double)n * (double)n * (double)n;
 	double gigaFlops = (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
+	int threadsSize = threads.x * threads.y;
 	printf(
 		"Performance= %.2f GFlop/s, Time= %.3f msec, Size= %.0f Ops, WorkgroupSize= %u threads/block\n",
 		gigaFlops,
 		msecPerMatrixMul,
 		flopsPerMatrixMul,
-		threads.x * threads.y);
+		threadsSize
+		);
 
+	dumpToFile(logStream,
+		n,
+		nstreams,
+		gigaFlops, 
+		msecPerMatrixMul, 
+		flopsPerMatrixMul, 
+		threadsSize,
+		grid_size,
+		block_size);
+	
 	printf("Checking computed result for correctness: ");
 	;
 	float *cres = static_cast<float*>(malloc(mat_mem_size));
@@ -388,6 +423,13 @@ int get_s(const int argc, char **argv, const int block_size, int n)
 */
 int main(int argc, char **argv)
 {
+	ofstream logStream;
+	logStream.open(logFilename.c_str());
+	if (!logStream.is_open()) {
+		printf("Failed to open log file %s\n", logFilename.c_str());
+		exit(-1);
+	}
+	dumpToFile(logStream, "n", "Number of streams", "Performance [GFlops]", "Time [ms]", "Flops per matrix", "WorkgroupSize", "Grid size", "Block size");
 	printf("[Matrix Multiply Using CUDA] - Starting...\n");
 	// By default, we use device 0, otherwise we override the device ID based on what is provided at the command line
 	int devID = 0;
@@ -423,6 +465,8 @@ int main(int argc, char **argv)
 	const int n = get_n(argc, argv, block_size);
 	const int streams = get_s(argc, argv, block_size, n);
 	printf("Matrix(%d,%d) - streams %d\n", n, n, streams);
-	const int result = matrixMultiply(block_size, n, streams);
+	const int result = matrixMultiply(block_size, n, streams, logStream);
+
+	logStream.close();
 	exit(result);
 }
