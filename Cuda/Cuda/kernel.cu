@@ -94,7 +94,7 @@ matrixMulCUDA(float *C, float *A, float *B, int n, int grid_size)
 		// to shared memory; each thread loads
 		// one element of each matrix
 		As[ty][tx] = A[a + n * ty + tx];
-		Bs[ty][tx] = B[b + n * ty + tx];
+		Bs[ty][tx] = B[b + n * tx + ty];
 
 		__syncthreads();
 
@@ -104,7 +104,7 @@ matrixMulCUDA(float *C, float *A, float *B, int n, int grid_size)
 #pragma unroll
 		for (int k = 0; k < BLOCK_SIZE; ++k)
 		{
-			Csub += As[ty][k] * Bs[tx][k];
+			Csub += As[ty][k] * Bs[k][tx];
 		}
 
 		// Synchronize to make sure that the preceding
