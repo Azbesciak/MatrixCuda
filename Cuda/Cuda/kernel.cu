@@ -30,6 +30,11 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include <stdio.h>
+#include <iostream>
+#include <fstream>
+#include <utility>
+
+using namespace std;
 
 #define WIN32
 #include <assert.h>
@@ -44,84 +49,59 @@
 #define N_ITER 10
 
 //CONSTANTS
-const int MATRIX_MAX_SIZE = 4096;
-const int MATRIX_MIN_SIZE = 0;
-const double eps = 1.e-4;  // machine zero
+#define MATRIX_MAX_SIZE 4096
+#define MATRIX_MIN_SIZE 0
+#define EPS 1.e-6
+
+#define DEBUG false
+
+#if DEBUG
+#define DEBUG_PRINT printf
+#else
+#define DEBUG_PRINT(...)
+#endif
 
 
-bool is_n_correct(int n);
-
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
-
-__global__ void addKernel(int *c, const int *a, const int *b)
-{
-	int i = threadIdx.x;
-	c[i] = a[i] + b[i];
-}
+const string logFilename = "logfile.txt";
 
 /**
 * Matrix multiplication (CUDA Kernel) on the device: C = A * B
-* n is A's width and wB is B's width
+* *_off - offset in indexes
 */
 template <int BLOCK_SIZE> __global__ void
-matrixMulCUDA(float *C, float *A, float *B, int n)
+matrixMulCUDA(float *C, float *A, float *B, int n, int grid_size)
 {
 	// Block index
 	int bx = blockIdx.x;
 	int by = blockIdx.y;
-
 	// Thread index
 	int tx = threadIdx.x;
 	int ty = threadIdx.y;
 
-	// Index of the first sub-matrix of A processed by the block
 	int aBegin = n * BLOCK_SIZE * by;
-
-	// Index of the last sub-matrix of A processed by the block
-	int aEnd = aBegin + n - 1;
-
-	// Step size used to iterate through the sub-matrices of A
+	int aEnd = aBegin + n;
 	int aStep = BLOCK_SIZE;
-
-	// Index of the first sub-matrix of B processed by the block
-	int bBegin = BLOCK_SIZE * bx;
-
-	// Step size used to iterate through the sub-matrices of B
-	int bStep = BLOCK_SIZE * n;
-
-	// Csub is used to store the element of the block sub-matrix
-	// that is computed by the thread
+	int bBegin = n * BLOCK_SIZE * bx;
+	int bStep = BLOCK_SIZE;
 	float Csub = 0;
 
-	// Loop over all the sub-matrices of A and B
-	// required to compute the block sub-matrix
-	for (int a = aBegin, b = bBegin;
-		a <= aEnd;
-		a += aStep, b += bStep)
+	for (int a = aBegin, b = bBegin; a < aEnd; a += aStep, b += bStep)
 	{
-
-		// Declaration of the shared memory array As used to
-		// store the sub-matrix of A
 		__shared__ float As[BLOCK_SIZE][BLOCK_SIZE];
-
-		// Declaration of the shared memory array Bs used to
-		// store the sub-matrix of B
 		__shared__ float Bs[BLOCK_SIZE][BLOCK_SIZE];
 
 		// Load the matrices from device memory
 		// to shared memory; each thread loads
 		// one element of each matrix
 		As[ty][tx] = A[a + n * ty + tx];
-		Bs[ty][tx] = B[b + n * ty + tx];
+		Bs[ty][tx] = B[b + n * tx + ty];
 
-		// Synchronize to make sure the matrices are loaded
 		__syncthreads();
 
 		// Multiply the two matrices together;
 		// each thread computes one element
 		// of the block sub-matrix
 #pragma unroll
-
 		for (int k = 0; k < BLOCK_SIZE; ++k)
 		{
 			Csub += As[ty][k] * Bs[k][tx];
@@ -135,8 +115,8 @@ matrixMulCUDA(float *C, float *A, float *B, int n)
 
 	// Write the block sub-matrix to device memory;
 	// each thread writes one element
-	int c = n * BLOCK_SIZE * by + BLOCK_SIZE * bx;
-	C[c + n * ty + tx] = Csub;
+	int c = grid_size * BLOCK_SIZE * by + BLOCK_SIZE * bx;
+	C[c + grid_size * ty + tx] = Csub;
 }
 
 void constantInit(float *data, int size, float val)
@@ -145,23 +125,78 @@ void constantInit(float *data, int size, float val)
 		data[i] = val;
 }
 
-void htd_sync_copy(const unsigned mat_mem_size, float* h_A, float* h_B, float* d_A, float* d_B)
+void randomInit(float * data, int size)
 {
-	checkCudaErrors(cudaMemcpy(d_A, h_A, mat_mem_size, cudaMemcpyHostToDevice));
-	checkCudaErrors(cudaMemcpy(d_B, h_B, mat_mem_size, cudaMemcpyHostToDevice));
+	for (int i = 0; i < size; ++i)
+		data[i] = (float)rand() / RAND_MAX;
 }
 
-void dth_sync_result_copy(const unsigned mat_mem_size, float* d_C, float* h_C)
+
+// recursive variadic function
+template<typename T,typename Element>
+void dumpToFile(ofstream &logStream, T && item, Element && element)
 {
-	checkCudaErrors(cudaMemcpy(h_C, d_C, mat_mem_size, cudaMemcpyDeviceToHost));
+	logStream << item << ";" << element << endl;
+}
+template<typename T, typename... Elements>
+void dumpToFile(ofstream &logStream,T &&first, Elements && ...args)
+{
+	logStream << forward<T>(first) << ";";
+	dumpToFile(logStream, forward<Elements>(args)...);
 }
 
+
+void htd_copy(const unsigned mat_mem_size, float* h,  float* d, cudaStream_t stream)
+{
+	checkCudaErrors(cudaMemcpyAsync(d, h, mat_mem_size, cudaMemcpyHostToDevice, stream));
+}
+
+void dth_copy(const unsigned mat_mem_size, float* d_C, float* h_C, cudaStream_t stream)
+{
+	checkCudaErrors(cudaMemcpyAsync(h_C, d_C, mat_mem_size, cudaMemcpyDeviceToHost, stream));
+}
+
+void transpose(float * mat, int n)
+{
+	for (int i = 0; i < n; i++)
+		for (int j = i+1; j < n; j++)
+		{
+			float temp = mat[i*n + j];
+			mat[i*n + j] = mat[j*n + i];
+			mat[j*n + i] = temp;
+		}
+}
+void ikj(float * a, float * b, float *c, int n) {
+	for (int i = 0; i < n; i++) {
+		for (int k = 0; k < n; k++) {
+			for (int j = 0; j < n; j++) {
+				c[i*n + j] += a[i*n +k] * b[k*n +j];
+			}
+		}
+	}
+}
+
+void change_lines_to_grid(float * lines, float * grid, int n, int chunk_n)
+{
+	const int gridSize = chunk_n * chunk_n;
+	const int oneDISize = n * n;
+	for (int oneDIndex = 0; oneDIndex < oneDISize; oneDIndex++)
+		for(int j = 0; j < n; j++) {
+			int gridIndex = oneDIndex / gridSize;
+			int fieldIndexInGrid = oneDIndex % gridSize;
+			int gridsInRow = n / chunk_n;
+			int gridIoff = gridIndex / gridsInRow * chunk_n;
+			int gridJoff = gridIndex % gridsInRow * chunk_n;
+			int ii = fieldIndexInGrid / chunk_n;
+			int jj = fieldIndexInGrid % chunk_n;
+			grid[(gridIoff + ii) * n + gridJoff + jj] = lines[oneDIndex];
+		}
+}
 /**
 * Run a simple test of matrix multiplication using CUDA
 */
-int matrixMultiply(int block_size, dim3 &dim, int nstreams = 1)
+int matrixMultiply(const int block_size, const int n, const int nstreams, ofstream &logStream)
 {
-	const int n = dim.x;
 	if (nstreams < 1 || nstreams > n)
 	{
 		printf("Number of nstreams should be in the range [1, %d] in.\n", n);
@@ -173,29 +208,30 @@ int matrixMultiply(int block_size, dim3 &dim, int nstreams = 1)
 		exit(0);
 	}
 	// Allocate host memory for matrices A and B
-	const unsigned int mat_size = n*n;
-	const unsigned int mat_mem_size = sizeof(float) * mat_size;
-	float *h_A = (float *)malloc(mat_mem_size);
-	float *h_B = (float *)malloc(mat_mem_size);
+	checkCudaErrors(cudaSetDeviceFlags(cudaDeviceBlockingSync | cudaDeviceMapHost));
+	
+	const unsigned int mat_size_in_1d = n*n;
+	const unsigned int mat_mem_size = sizeof(float) * mat_size_in_1d;
+	float *h_a, *h_b, *h_c;
+	checkCudaErrors(cudaMallocHost(&h_a, mat_mem_size));
+	checkCudaErrors(cudaMallocHost(&h_b, mat_mem_size));
+	checkCudaErrors(cudaMallocHost(&h_c, mat_mem_size));
 
-	// Initialize host memory
-	const float valB = 0.01f;
-	constantInit(h_A, mat_size, 1.0f);
-	constantInit(h_B, mat_size, valB);
-
+	randomInit(h_a, mat_size_in_1d);
+	randomInit(h_b, mat_size_in_1d);
+	transpose(h_b, n);
 	// Allocate device memory
 	float *d_A, *d_B, *d_C;
-
-	float *h_C = (float *)malloc(mat_mem_size);
-
+	
 	//nstreams for async communication
-	cudaStream_t *streams = (cudaStream_t *)malloc(nstreams * sizeof(cudaStream_t));
-	for (int i = 0; i < nstreams; i++)
+	const int square_nstreams = nstreams * nstreams;
+	cudaStream_t *streams = static_cast<cudaStream_t *>(malloc(square_nstreams * sizeof(cudaStream_t)));
+	for (int i = 0; i < square_nstreams; i++)
 	{
 		checkCudaErrors(cudaStreamCreate(&streams[i]));
 	}
 
-	if (h_C == NULL)
+	if (h_c == NULL)
 	{
 		fprintf(stderr, "Failed to allocate host matrix C!\n");
 		exit(EXIT_FAILURE);
@@ -206,33 +242,55 @@ int matrixMultiply(int block_size, dim3 &dim, int nstreams = 1)
 	checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&d_C), mat_mem_size));
 
 	// Setup execution parameters
-	dim3 threads(block_size, block_size);
-	dim3 grid(dim.x / threads.x, dim.y / threads.y);
-
+	
+	
 	// Allocate CUDA events that we'll use for timing
 	cudaEvent_t start, stop;
-	checkCudaErrors(cudaEventCreate(&start));
-	checkCudaErrors(cudaEventCreate(&stop));
+	checkCudaErrors(cudaEventCreateWithFlags(&start, cudaEventBlockingSync));
+	checkCudaErrors(cudaEventCreateWithFlags(&stop, cudaEventBlockingSync));
 
 	// Record the start event
 	checkCudaErrors(cudaEventRecord(start, NULL));
 	
-	const int step = n / nstreams;
-	for (int j = 0; j < N_ITER; j++)
+	const int step = mat_size_in_1d / nstreams;
+	const unsigned int chunk_mem_size = mat_mem_size / nstreams;
+	const unsigned int result_chunk_mem_size = chunk_mem_size / nstreams;
+	const int grid_size = n / block_size / nstreams;
+	dim3 threads(block_size, block_size); // ALWAYS EQUAL TO BLOCK SIZE
+	dim3 grid(grid_size, grid_size);
+	const int result_chunk_n = n / nstreams;
+	for (int iter = 0; iter < N_ITER; iter++)
 	{
-		printf("iteration %d\n", j);
+		DEBUG_PRINT("iteration %d\n", iter);
 		
-		for (int i = 0, off = 0; i < nstreams; i++, off += step)
+		for (int a_i = 0, a_off = 0; a_i < nstreams; a_i++, a_off += step)
 		{
-			htd_sync_copy(mat_mem_size, h_A, h_B, d_A, d_B);
-			switch (block_size)
+			for (int b_i = 0, b_off = 0; b_i < nstreams; b_i++, b_off += step)
 			{
-			case 8: matrixMulCUDA<8> <<< grid, threads >>> (d_C, d_A, d_B, dim.x); break;
-			case 16: matrixMulCUDA<16> <<< grid, threads >>> (d_C, d_A, d_B, dim.x); break;
-			case 32: matrixMulCUDA<32> <<< grid, threads >>> (d_C, d_A, d_B, dim.x); break;
+				
+				float* h_a_step = h_a + a_off;
+				float* d_a_step = d_A + a_off;
+				const int stream_index = a_i*nstreams + b_i;
+				htd_copy(chunk_mem_size, h_a_step, d_a_step, streams[stream_index]);
+
+				float* h_b_step = h_b + b_off;
+				float* d_b_step = d_B + b_off;
+				htd_copy(chunk_mem_size, h_b_step, d_b_step, streams[stream_index]);
+
+				const int result_off = a_off + b_off / nstreams;
+				DEBUG_PRINT("res off: %d\n", result_off);
+				float* d_c_step = d_C + result_off;
+				float* h_c_step = h_c + result_off;
+				switch (block_size)
+				{
+				case 8: matrixMulCUDA<8> << < grid, threads, 0, streams[stream_index] >> > (d_c_step, d_a_step, d_b_step, n, result_chunk_n); break;
+				case 16: matrixMulCUDA<16> << < grid, threads, 0, streams[stream_index] >> > (d_c_step, d_a_step, d_b_step, n, result_chunk_n); break;
+				case 32: matrixMulCUDA<32> << < grid, threads, 0, streams[stream_index] >> > (d_c_step, d_a_step, d_b_step, n, result_chunk_n); break;
+				}
+				dth_copy(result_chunk_mem_size, d_c_step, h_c_step, streams[stream_index]);
 			}
-			dth_sync_result_copy(mat_mem_size, d_C, h_C);
 		}
+		cudaDeviceSynchronize();
 	}
 
 	// Record the stop event
@@ -245,74 +303,133 @@ int matrixMultiply(int block_size, dim3 &dim, int nstreams = 1)
 	checkCudaErrors(cudaEventElapsedTime(&msecTotal, start, stop));
 	// Compute and print the performance
 	float msecPerMatrixMul = msecTotal / N_ITER;
-	double flopsPerMatrixMul = 2.0 * (double)dim.x * (double)dim.y * (double)dim.x;
+	double flopsPerMatrixMul = 2.0 * (double)n * (double)n * (double)n;
 	double gigaFlops = (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
+	int threadsSize = threads.x * threads.y;
 	printf(
 		"Performance= %.2f GFlop/s, Time= %.3f msec, Size= %.0f Ops, WorkgroupSize= %u threads/block\n",
 		gigaFlops,
 		msecPerMatrixMul,
 		flopsPerMatrixMul,
-		threads.x * threads.y);
+		threadsSize
+		);
 
+	dumpToFile(logStream,
+		n,
+		nstreams,
+		gigaFlops, 
+		msecPerMatrixMul, 
+		flopsPerMatrixMul, 
+		threadsSize,
+		grid_size,
+		block_size);
+	
 	printf("Checking computed result for correctness: ");
-	bool correct = true;
-	const double dot_length = dim.x;
-	for (int i = 0; i < (int)(dim.x * dim.y); i++)
-	{
-		const double abs_err = fabs(h_C[i] - (dim.x * valB));
-		const double abs_val = fabs(h_C[i]);
-		const double rel_err = abs_err / abs_val / dot_length;
+	;
+	float *cres = static_cast<float*>(malloc(mat_mem_size));
+	float *temp_c = static_cast<float*>(malloc(mat_mem_size));
 
-		if (rel_err > eps) {
-			printf("Error - too big inaccuracy! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",
-				i, h_C[i], dim.x * valB, eps);
-			correct = false;
+	constantInit(cres, mat_size_in_1d, 0);
+	constantInit(temp_c, mat_size_in_1d, 0);
+	transpose(h_b, n);
+	ikj(h_a, h_b, cres, n);
+	change_lines_to_grid(h_c, temp_c, n, result_chunk_n);
+	float sum_org = 0, sum_cpy = 0;
+	bool is_correct = true;
+	for (int i = 0; i < mat_size_in_1d; i++)
+	{
+		sum_org += temp_c[i];
+		sum_cpy += cres[i];
+		const double abs_err = fabs(temp_c[i] - cres[i]);
+		const double abs_val = fabs(temp_c[i]);
+		const double rel_err = abs_err / abs_val;
+
+		if (rel_err > EPS) {
+			DEBUG_PRINT("Error - too big inaccuracy! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",
+				i, temp_c[i], cres[i], EPS);
+			is_correct = false;
 		}
 	}
-
-	printf("%s\n", correct ? "OK" : "FAIL");
+	
+	printf("%s\n", is_correct ? "OK" : "FAIL");
+	if (!is_correct)
+		printf("org- %f, cpy- %f, dif: %f \n", sum_org, sum_cpy, sum_org - sum_cpy);
 
 	// Clean up memory
-	free(h_A);
-	free(h_B);
-	free(h_C);
+	free(temp_c);
+	free(cres);
+	for (int i = 0; i < square_nstreams; i++)
+		checkCudaErrors(cudaStreamDestroy(streams[i]));
+	cudaFreeHost(h_a);
+	cudaFreeHost(h_b);
+	cudaFreeHost(h_c);
 	free(streams);
 	cudaFree(d_A);
 	cudaFree(d_B);
 	cudaFree(d_C);
 	cudaDeviceReset();
-	return correct ? EXIT_SUCCESS : EXIT_FAILURE;
+	return is_correct ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
 bool is_n_correct(int n)
 {
-	return (n >= MATRIX_MIN_SIZE && n <= MATRIX_MAX_SIZE);
+	return n >= MATRIX_MIN_SIZE && n <= MATRIX_MAX_SIZE;
 }
 
-int get_n(int argc, char **argv, int block_size)
+
+int get_n(const int argc, char **argv, const int block_size)
 {
 	int n = 512;
-	if (checkCmdLineFlag(argc, (const char **)argv, "n"))
+	if (checkCmdLineFlag(argc, const_cast<const char **>(argv), "n"))
 	{
-		n = getCmdLineArgumentInt(argc, (const char **)argv, "n");
+		n = getCmdLineArgumentInt(argc, const_cast<const char **>(argv), "n");
 	}
 	if (!is_n_correct(n))
 	{
 		printf("N=%d is incorrect. n should be in the range [%d, %d].\n", n, MATRIX_MIN_SIZE, MATRIX_MAX_SIZE);
-		exit(-1);
+		exit(EXIT_FAILURE);
 	}
 	if (n % block_size != 0)
 	{
 		printf("n should be multiplication of %d", block_size);
-		exit(0);
+		exit(EXIT_FAILURE);
 	}
 	return n;
+}
+
+
+bool is_s_correct(int s, int n, int block_size)
+{
+	const int grid_size = n / block_size;
+	return s > 0 && grid_size % s == 0;
+}
+
+int get_s(const int argc, char **argv, const int block_size, int n)
+{
+	int streams = 1;
+	if (checkCmdLineFlag(argc, const_cast<const char **>(argv), "s"))
+	{
+		streams = getCmdLineArgumentInt(argc, const_cast<const char **>(argv), "s");
+		if (!is_s_correct(streams, n, block_size))
+		{
+			printf("streams count should be greater than 0 and be divider of n / block_size (%d)\n", n);
+			exit(EXIT_FAILURE);
+		}
+	}
+	return streams;
 }
 /**
 * Program main
 */
 int main(int argc, char **argv)
 {
+	ofstream logStream;
+	logStream.open(logFilename.c_str());
+	if (!logStream.is_open()) {
+		printf("Failed to open log file %s\n", logFilename.c_str());
+		exit(-1);
+	}
+	dumpToFile(logStream, "n", "Number of streams", "Performance [GFlops]", "Time [ms]", "Flops per matrix", "WorkgroupSize", "Grid size", "Block size");
 	printf("[Matrix Multiply Using CUDA] - Starting...\n");
 	// By default, we use device 0, otherwise we override the device ID based on what is provided at the command line
 	int devID = 0;
@@ -344,18 +461,12 @@ int main(int argc, char **argv)
 	// Use a larger block size for Fermi and above
 	const int block_size = (device_prop.major < 2) ? 16 : 32;
 
-	dim3 dim(20 * block_size, 20 * block_size, 1);
 	// width of Matrix A
 	const int n = get_n(argc, argv, block_size);
-	dim.x = dim.y = n;
-	printf("Matrix(%d,%d)\n", dim.x, dim.y);
-	if (checkCmdLineFlag(argc, const_cast<const char **>(argv), "a")) //async
-	{
-		const int streams = (n / block_size);
-		matrixMultiply(block_size, dim, streams);
-	} else
-	{
-		matrixMultiply(block_size, dim);
-	}
-	exit(0);
+	const int streams = get_s(argc, argv, block_size, n);
+	printf("Matrix(%d,%d) - streams %d\n", n, n, streams);
+	const int result = matrixMultiply(block_size, n, streams, logStream);
+
+	logStream.close();
+	exit(result);
 }
