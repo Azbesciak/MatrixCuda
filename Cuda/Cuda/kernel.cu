@@ -168,27 +168,24 @@ void dth_copy(const unsigned mat_mem_size, float* d_C, float* h_C, cudaStream_t 
 }
 
 void ikj(float * a, float * b, float *c, int n) {
-	for (int i = 0; i < n; i++) {
-		for (int k = 0; k < n; k++) {
-			for (int j = 0; j < n; j++) {
+	for (int i = 0; i < n; i++)
+		for (int k = 0; k < n; k++)
+			for (int j = 0; j < n; j++)
 				c[i*n + j] += a[i*n +k] * b[k*n +j];
-			}
-		}
-	}
 }
 
 /**
 * Run a simple test of matrix multiplication using CUDA
 */
-int matrixMultiply(const int block_size, const int n, const int nstreams, ofstream &logStream)
+int matrixMultiply(const int block_size, const int n, const int nmats, const int nstreams, ofstream &logStream)
 {
 	// Allocate host memory for matrices A and B
 	checkCudaErrors(cudaSetDeviceFlags(cudaDeviceBlockingSync | cudaDeviceMapHost));
 	
 	const unsigned int mat_size_in_1d = n*n;
-	const unsigned int uber_mat_size = nstreams * mat_size_in_1d;
+	const unsigned int uber_mat_size = nmats * mat_size_in_1d;
 	const unsigned int mat_mem_size = sizeof(float) * mat_size_in_1d;
-	const unsigned int uber_mat_mem_size = mat_mem_size * nstreams;
+	const unsigned int uber_mat_mem_size = mat_mem_size * nmats;
 	float *h_a, *h_b, *h_c;
 	checkCudaErrors(cudaMallocHost(&h_a, uber_mat_mem_size));
 	checkCudaErrors(cudaMallocHost(&h_b, uber_mat_mem_size));
@@ -232,9 +229,9 @@ int matrixMultiply(const int block_size, const int n, const int nstreams, ofstre
 	{
 		DEBUG_PRINT("iteration %d\n", iter);
 
-		for (int i = 0, off = 0; i < nstreams; i++, off += mat_size_in_1d)
+		for (int i = 0, off = 0; i < nmats; i++, off += mat_size_in_1d)
 		{
-			const int stream_index = i;
+			const int stream_index = i % nstreams;
 			float* h_a_step = h_a + off;
 			float* d_a_step = d_A + off;
 			htd_copy(mat_mem_size, h_a_step, d_a_step, streams[stream_index]);
@@ -265,30 +262,18 @@ int matrixMultiply(const int block_size, const int n, const int nstreams, ofstre
 	float msecTotal = 0.0f;
 	checkCudaErrors(cudaEventElapsedTime(&msecTotal, start, stop));
 	// Compute and print the performance
-	float msecPerMatrixMul = msecTotal / N_ITER;
-	double flopsPerMatrixMul = 2.0 * (double)n * (double)n * (double)n;
-	double gigaFlops = (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
+	const float msecPerMatrixMul = msecTotal / N_ITER;
+	const double flopsPerMatrixMul = 2.0 * n * n * n;
+	const double gigaFlops = (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
 	int threadsSize = threads.x * threads.y;
 	printf(
 		"Performance= %.2f GFlop/s, Time= %.3f msec, Size= %.0f Ops, WorkgroupSize= %u threads/block\n",
-		gigaFlops,
-		msecPerMatrixMul,
-		flopsPerMatrixMul,
-		threadsSize
-		);
+					gigaFlops, msecPerMatrixMul,flopsPerMatrixMul,threadsSize);
 
-	dumpToFile(logStream,
-		n,
-		nstreams,
-		gigaFlops, 
-		msecPerMatrixMul, 
-		flopsPerMatrixMul, 
-		threadsSize,
-		grid_size,
-		block_size);
+	dumpToFile(logStream, n, nstreams, gigaFlops, msecPerMatrixMul,
+				flopsPerMatrixMul, threadsSize, grid_size, block_size);
 	
 	printf("Checking computed result for correctness: ");
-	;
 	float *cres = static_cast<float*>(malloc(uber_mat_mem_size));
 
 	constantInit(cres, uber_mat_size, 0);
@@ -336,13 +321,18 @@ bool is_n_correct(int n)
 }
 
 
+int get_cmd_arg(const int argc, char **argv, const char * flag, int def)
+{
+	if (checkCmdLineFlag(argc, const_cast<const char **>(argv), flag))
+	{
+		def = getCmdLineArgumentInt(argc, const_cast<const char **>(argv), flag);
+	}
+	return def;
+}
+
 int get_n(const int argc, char **argv, const int block_size)
 {
-	int n = 512;
-	if (checkCmdLineFlag(argc, const_cast<const char **>(argv), "n"))
-	{
-		n = getCmdLineArgumentInt(argc, const_cast<const char **>(argv), "n");
-	}
+	const int n = get_cmd_arg(argc, argv, "n", 512);
 	if (!is_n_correct(n))
 	{
 		printf("N=%d is incorrect. n should be in the range [%d, %d].\n", n, MATRIX_MIN_SIZE, MATRIX_MAX_SIZE);
@@ -350,22 +340,43 @@ int get_n(const int argc, char **argv, const int block_size)
 	}
 	if (n % block_size != 0)
 	{
-		printf("n should be multiplication of %d", block_size);
+		printf("n should be multiplication of %d, got %d\n", block_size, n);
 		exit(EXIT_FAILURE);
 	}
 	return n;
 }
 
 
-int get_s(const int argc, char **argv)
+int get_s(const int argc, char **argv, const int n_mats)
 {
-	int streams = 1;
-	if (checkCmdLineFlag(argc, const_cast<const char **>(argv), "s"))
+	const int s = get_cmd_arg(argc, argv, "s", 1);
+	if (n_mats % s != 0)
 	{
-		streams = getCmdLineArgumentInt(argc, const_cast<const char **>(argv), "s");
+		printf("number of streams must be a natural divider of n of matrixes, got %d\n", s);
+		exit(EXIT_FAILURE);
 	}
-	return streams;
+	return s;
 }
+
+int get_block_size(const int argc, char **argv)
+{
+	const int block_size = get_cmd_arg(argc, argv, "b", 32);
+	switch (block_size)
+	{
+	case 8: case 16: case 32: return block_size;
+	default: {
+		printf("block size must be 8/16/32, received %d\n", block_size);
+		exit(EXIT_FAILURE);
+	}
+	}
+}
+
+int get_n_mats(const int argc, char **argv)
+{
+	return get_cmd_arg(argc, argv, "m", 1);
+}
+
+
 /**
 * Program main
 */
@@ -375,45 +386,31 @@ int main(int argc, char **argv)
 	logStream.open(logFilename.c_str());
 	if (!logStream.is_open()) {
 		printf("Failed to open log file %s\n", logFilename.c_str());
-		exit(-1);
+		exit(EXIT_FAILURE);
 	}
 	dumpToFile(logStream, "n", "Number of streams", "Performance [GFlops]", "Time [ms]", "Flops per matrix", "WorkgroupSize", "Grid size", "Block size");
 	printf("[Matrix Multiply Using CUDA] - Starting...\n");
 	// By default, we use device 0, otherwise we override the device ID based on what is provided at the command line
 	int devID = 0;
-	cudaError_t error = cudaGetDevice(&devID);
-
-	if (error != cudaSuccess)
-	{
-		printf("cudaGetDevice returned error code %d, line(%d)\n", error, __LINE__);
-	}
-
+	checkCudaErrors(cudaGetDevice(&devID));
 	cudaDeviceProp device_prop;
-	error = cudaGetDeviceProperties(&device_prop, devID);
+	checkCudaErrors(cudaGetDeviceProperties(&device_prop, devID));
 
 	if (device_prop.computeMode == cudaComputeModeProhibited)
 	{
 		fprintf(stderr, "Error: device is running in <Compute Mode Prohibited>, no threads can use ::cudaSetDevice().\n");
-		exit(EXIT_SUCCESS);
+		exit(EXIT_FAILURE);
 	}
 
-	if (error != cudaSuccess)
-	{
-		printf("cudaGetDeviceProperties returned error code %d, line(%d)\n", error, __LINE__);
-	}
-	else
-	{
-		printf("GPU Device %d: \"%s\" with compute capability %d.%d\n\n", devID, device_prop.name, device_prop.major, device_prop.minor);
-	}
+	printf("GPU Device %d: \"%s\" with compute capability %d.%d\n\n", devID, device_prop.name, device_prop.major, device_prop.minor);
+	
 
-	// Use a larger block size for Fermi and above
-	const int block_size = (device_prop.major < 2) ? 16 : 32;
-
-	// width of Matrix A
+	const int block_size = get_block_size(argc, argv);
 	const int n = get_n(argc, argv, block_size);
-	const int streams = get_s(argc, argv);
-	printf("Matrix(%d,%d) - streams %d\n", n, n, streams);
-	const int result = matrixMultiply(block_size, n, streams, logStream);
+	const int n_mats = get_n_mats(argc, argv);
+	const int streams = get_s(argc, argv, n_mats);
+	printf("Matrix(%d,%d) x %d // streams %d [block %d]\n", n, n, n_mats, streams, block_size);
+	const int result = matrixMultiply(block_size, n, n_mats, streams, logStream);
 
 	logStream.close();
 	exit(result);
