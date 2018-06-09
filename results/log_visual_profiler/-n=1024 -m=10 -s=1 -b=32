@@ -1,0 +1,2 @@
+Name,Invocations,Avg. Duration(ns),Registers/Thread,Static Shared Memory,Avg. Dynamic Shared Memory,Instructions Executed,global load,global store,Achieved Occupancy,warps_launched
+"void matrixMulCUDA<int=32>(float*, float*, float*, int)",100,7777496,27,8192,0,96632832,2097152,32768,0.997,32768
