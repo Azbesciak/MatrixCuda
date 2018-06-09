@@ -61,6 +61,7 @@ using namespace std;
 #define DEBUG_PRINT(...)
 #endif
 
+#define CHECK false
 
 const string logFilename = "logfile.txt";
 
@@ -174,6 +175,39 @@ void ikj(float * a, float * b, float *c, int n) {
 				c[i*n + j] += a[i*n +k] * b[k*n +j];
 }
 
+void do_check(const int n, const int nstreams, const unsigned mat_size_in_1d, const unsigned uber_mat_size, const unsigned uber_mat_mem_size, float* h_a, float* h_b, float* h_c)
+{
+	printf("Checking computed result for correctness: ");
+	float *cres = static_cast<float*>(malloc(uber_mat_mem_size));
+
+	constantInit(cres, uber_mat_size, 0);
+	for (int i = 0, off = 0; i < nstreams; i++, off += mat_size_in_1d)
+		ikj(h_a + off, h_b + off, cres + off, n);
+	float sum_org = 0, sum_cpy = 0;
+	bool is_correct = true;
+	for (int i = 0; i < uber_mat_size; i++)
+	{
+		sum_org += h_c[i];
+		sum_cpy += cres[i];
+		const double abs_err = fabs(h_c[i] - cres[i]);
+		const double abs_val = fabs(h_c[i]);
+		const double rel_err = abs_err / abs_val;
+ 
+		if (rel_err > EPS) {
+			DEBUG_PRINT("Error - too big inaccuracy! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",
+				i, temp_c[i], cres[i], EPS);
+			is_correct = false;
+		}
+	}
+	
+	printf("%s\n", is_correct ? "OK" : "FAIL");
+	if (!is_correct)
+		printf("org- %f, cpy- %f, dif: %f \n", sum_org, sum_cpy, sum_org - sum_cpy);
+ 
+	// Clean up memory
+	free(cres);
+}
+
 /**
 * Run a simple test of matrix multiplication using CUDA
 */
@@ -263,7 +297,7 @@ int matrixMultiply(const int block_size, const int n, const int nmats, const int
 	checkCudaErrors(cudaEventElapsedTime(&msecTotal, start, stop));
 	// Compute and print the performance
 	const float msecPerMatrixMul = msecTotal / N_ITER;
-	const double flopsPerMatrixMul = 2.0 * n * n * n;
+	const double flopsPerMatrixMul = 2.0 * n * n * n*nmats;
 	const double gigaFlops = (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
 	int threadsSize = threads.x * threads.y;
 	printf(
@@ -272,36 +306,8 @@ int matrixMultiply(const int block_size, const int n, const int nmats, const int
 
 	dumpToFile(logStream, n, nstreams, gigaFlops, msecPerMatrixMul,
 				flopsPerMatrixMul, threadsSize, grid_size, block_size);
-	
-	printf("Checking computed result for correctness: ");
-	float *cres = static_cast<float*>(malloc(uber_mat_mem_size));
-
-	constantInit(cres, uber_mat_size, 0);
-	for (int i = 0, off = 0; i < nstreams; i++, off += mat_size_in_1d)
-		ikj(h_a + off, h_b + off, cres + off, n);
-	float sum_org = 0, sum_cpy = 0;
-	bool is_correct = true;
-	for (int i = 0; i < uber_mat_size; i++)
-	{
-		sum_org += h_c[i];
-		sum_cpy += cres[i];
-		const double abs_err = fabs(h_c[i] - cres[i]);
-		const double abs_val = fabs(h_c[i]);
-		const double rel_err = abs_err / abs_val;
-
-		if (rel_err > EPS) {
-			DEBUG_PRINT("Error - too big inaccuracy! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",
-				i, temp_c[i], cres[i], EPS);
-			is_correct = false;
-		}
-	}
-	
-	printf("%s\n", is_correct ? "OK" : "FAIL");
-	if (!is_correct)
-		printf("org- %f, cpy- %f, dif: %f \n", sum_org, sum_cpy, sum_org - sum_cpy);
-
-	// Clean up memory
-	free(cres);
+	if (CHECK)
+		do_check(n, nstreams, mat_size_in_1d, uber_mat_size, uber_mat_mem_size, h_a, h_b, h_c);
 	for (int i = 0; i < nstreams; i++)
 		checkCudaErrors(cudaStreamDestroy(streams[i]));
 	cudaFreeHost(h_a);
@@ -312,7 +318,7 @@ int matrixMultiply(const int block_size, const int n, const int nmats, const int
 	cudaFree(d_B);
 	cudaFree(d_C);
 	cudaDeviceReset();
-	return is_correct ? EXIT_SUCCESS : EXIT_FAILURE;
+	return true ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
 bool is_n_correct(int n)
@@ -383,12 +389,12 @@ int get_n_mats(const int argc, char **argv)
 int main(int argc, char **argv)
 {
 	ofstream logStream;
-	logStream.open(logFilename.c_str());
+	logStream.open(logFilename.c_str(), ofstream::out | ofstream::app);
 	if (!logStream.is_open()) {
 		printf("Failed to open log file %s\n", logFilename.c_str());
 		exit(EXIT_FAILURE);
 	}
-	dumpToFile(logStream, "n", "Number of streams", "Performance [GFlops]", "Time [ms]", "Flops per matrix", "WorkgroupSize", "Grid size", "Block size");
+	// dumpToFile(logStream, "n", "Number of streams", "Performance [GFlops]", "Time [ms]", "Flops per matrix", "WorkgroupSize", "Grid size", "Block size");
 	printf("[Matrix Multiply Using CUDA] - Starting...\n");
 	// By default, we use device 0, otherwise we override the device ID based on what is provided at the command line
 	int devID = 0;
