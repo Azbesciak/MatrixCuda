@@ -1,0 +1,1 @@
+nvprof.exe --print-gpu-trace --metrics ipc  --csv --log-file "[path to log file]" "[path to project]MatrixCuda\Cuda\x64\Release\Cuda.exe"  -n=1024 -s=2 -m=10
