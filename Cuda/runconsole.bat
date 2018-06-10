@@ -1,1 +1,3 @@
-nvprof.exe --print-gpu-trace --metrics ipc  --csv --log-file "[path to log file]" "[path to project]MatrixCuda\Cuda\x64\Release\Cuda.exe"  -n=1024 -s=2 -m=10
+nvprof.exe --print-gpu-trace --events shared_load,shared_store --metrics achieved_occupancy,ipc,executed_ipc,duration --aggregate-mode on  --csv --log-file ".\output" ".\x64\Release\Cuda.exe" --event-collection-mode kernel --kernels "matrixMulCUDA"
+
+:: -n=1024 -s=2 -m=10
