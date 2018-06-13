@@ -1,0 +1,13 @@
+Name;Invocations;Avg. Duration(ns);Registers/Thread;Static Shared Memory;Avg. Dynamic Shared Memory;Instructions Executed;global load;global store;Achieved Occupancy;warps_launched;n;m;s;b
+void matrixMulCUDA<int=16>(float*, float*, float*, int);100;1903;27;2048;0;4704;128;32;0.124;32;32;10;1;16
+void matrixMulCUDA<int=32>(float*, float*, float*, int);100;2749;27;8192;0;4096;64;32;0.488;32;32;10;1;32
+void matrixMulCUDA<int=8>(float*, float*, float*, int);100;2727;27;512;0;5920;256;32;0.098;32;32;10;1;8
+void matrixMulCUDA<int=16>(float*, float*, float*, int);100;2429;27;2048;0;4704;128;32;0.124;32;32;10;10;16
+void matrixMulCUDA<int=32>(float*, float*, float*, int);100;3035;27;8192;0;4096;64;32;0.488;32;32;10;10;32
+void matrixMulCUDA<int=8>(float*, float*, float*, int);100;3049;27;512;0;5920;256;32;0.098;32;32;10;10;8
+void matrixMulCUDA<int=16>(float*, float*, float*, int);100;4688;27;2048;0;32896;1024;128;0.392;128;64;10;1;16
+void matrixMulCUDA<int=32>(float*, float*, float*, int);100;4366;27;8192;0;28032;512;128;0.494;128;64;10;1;32
+void matrixMulCUDA<int=8>(float*, float*, float*, int);100;4813;27;512;0;42624;2048;128;0.381;128;64;10;1;8
+void matrixMulCUDA<int=16>(float*, float*, float*, int);100;5867;27;2048;0;32896;1024;128;0.392;128;64;10;10;16
+void matrixMulCUDA<int=32>(float*, float*, float*, int);100;5267;27;8192;0;28032;512;128;0.494;128;64;10;10;32
+void matrixMulCUDA<int=8>(float*, float*, float*, int);100;5957;27;512;0;42624;2048;128;0.381;128;64;10;10;8
