@@ -2,7 +2,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 
 val blockSizes = listOf(8,16,32)
-val matSizes = listOf(128, 256,512,1024,2048)
+val matSizes = listOf(32,64, 128, 256, 512, 1024, 2048)
 const val matNum = 10
 
 data class Param(val n: Int, val b: Int, val s: Int, val m: Int)
